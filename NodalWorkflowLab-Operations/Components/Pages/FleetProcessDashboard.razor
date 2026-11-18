@@ -1,0 +1,905 @@
+@implements IAsyncDisposable
+@inject ProcessOperationsStore ProcessStore
+@inject OperationsStore Operations
+@inject FleetIntelligenceStore Intelligence
+@inject IJSRuntime JS
+
+<div class="fleet-constellation @(GraphFocusMode ? "fc-focus-mode" : "") @(AutoPlay ? "fc-sim-running" : "")" aria-label="Interactive fleet process dashboard with personal draggable node layouts">
+    <section class="fc-overview-screen" id="fc-overview-screen" aria-label="Live fleet process map">
+    @if (ShowIntake)
+    {
+        <section class="fc-intake">
+            <div><strong>Register a fictional repair visit</strong><span>All models enter the same universal Gate 1. No real engine record is created.</span></div>
+            <label>Model<input @bind="NewFamily" maxlength="65" placeholder="PW1100G-JM" /></label>
+            <label>Aircraft / use<input @bind="NewAircraft" maxlength="80" placeholder="Airbus A320neo family" /></label>
+            <button class="fc-btn fc-btn-primary" disabled="@Busy" @onclick="RegisterAsync">Start Gate 1</button>
+            <button class="fc-btn fc-btn-subtle" @onclick="ToggleIntake">Cancel</button>
+        </section>
+    }
+    @if (ShowReset)
+    {
+        <div class="fc-reset" role="alertdialog" aria-label="Confirm synthetic data reset">
+            <div><strong>Reset all demonstration operations?</strong><span>Replaces synthetic engine visits, actions, findings and events. Saved process definitions and workflows are preserved. This also removes any custom repair visits created within the demo.</span></div>
+            <button class="fc-btn fc-btn-subtle" @onclick="ToggleReset">Cancel</button>
+            <button class="fc-btn fc-btn-danger" disabled="@Busy" @onclick="ResetDemoAsync">Reset simulation</button>
+        </div>
+    }
+    @if (!string.IsNullOrWhiteSpace(Notification))
+    { <div class="fc-notification @(NotificationError ? "fc-error" : "")" role="status">@Notification</div> }
+
+    <section class="fc-metrics" aria-label="Overall fleet metrics">
+        <div class="fc-metric"><span>ENGINE REPAIR VISITS</span><strong>@Filtered.Count</strong><div class="fc-metric-glow"></div></div>
+        <div class="fc-metric"><span>GATE 1 COMPLETED</span><strong>@Filtered.Count(e => e.Stages.GetValueOrDefault("induct") == "Complete")</strong></div>
+        <div class="fc-metric"><span>ACTIVE HOLDS</span><strong class="fc-amber">@Filtered.Sum(e => HoldCount(e.Id))</strong></div>
+        <div class="fc-metric"><span>PERSISTED HUMAN WAITS</span><strong class="fc-violet">@Filtered.Sum(e => WaitCount(e.Id))</strong></div>
+        <div class="fc-metric"><span>OPEN ACTIONS</span><strong>@ActionCount</strong></div>
+    </section>
+
+
+    <!-- One shared toolbar for the process perspective, intelligence tools and live demo. -->
+    <section class="fc-unified-commandbar" aria-label="Fleet view, intelligence and demonstration controls">
+        <div class="fc-command-view" aria-label="Graph perspective and intelligence tools">
+            <div class="fc-scope-switch" role="group" aria-label="Operational graph scope">
+                <button class="@(ScopeMode == "site" ? "selected" : "")" @onclick='() => SetScope("site")'>▦ Site</button>
+                <button class="@(ScopeMode == "workspace" ? "selected" : "")" @onclick='() => SetScope("workspace")'>◎ Workspace</button>
+                <button class="@(ScopeMode == "engine" ? "selected" : "")" @onclick='() => SetScope("engine")'>◈ Engine</button>
+            </div>
+            @if (ScopeMode == "workspace")
+            { <select class="fc-intel-select nodal-select" @bind="SelectedWorkspaceId" aria-label="Workspace scope">@foreach (var ws in Actions.Workspaces) { <option value="@ws.Id">@ws.Name</option> }</select> }
+            @if (ScopeMode == "engine")
+            { <select class="fc-intel-select nodal-select" @bind="ScopeEngineId" aria-label="Engine scope">@foreach (var eng in Data.Engines.OrderBy(e=>e.Id)) { <option value="@eng.Id">@eng.Id · @eng.Family</option> }</select> }
+            <label class="fc-heat-select">Color by <select class="nodal-select" @bind="HeatmapMetric" aria-label="Heatmap metric"><option value="pressure">Blocked / waiting</option><option value="queue">Active workload</option><option value="holds">Component holds</option><option value="completion">Incomplete share</option></select></label>
+            <div class="fc-command-tools" role="group" aria-label="Intelligence tools">
+                <button class="fc-intel-tab @(ActivePanel == "causes" ? "selected" : "")" @onclick='() => TogglePanel("causes")' title="Explain blockers">⚡ <span class="fc-tool-label-long">Explain blockers</span><span class="fc-tool-label-compact">Blockers</span></button>
+                <button class="fc-intel-tab @(ActivePanel == "timeline" ? "selected" : "")" @onclick='() => TogglePanel("timeline")' title="Open the time machine">◷ <span class="fc-tool-label-long">Time machine</span><span class="fc-tool-label-compact">Replay</span></button>
+                <button class="fc-intel-tab @(ActivePanel == "forecast" ? "selected" : "")" @onclick='() => TogglePanel("forecast")' title="Open the scenario simulator">◈ <span class="fc-tool-label-long">Simulate</span><span class="fc-tool-label-compact">Simulate</span></button>
+                <button class="fc-intel-tab @(ActivePanel == "views" ? "selected" : "")" @onclick='() => TogglePanel("views")' title="Saved investigations and views">◇ <span class="fc-tool-label-long">Saved views</span><span class="fc-tool-label-compact">Views</span></button>
+                <button class="fc-intel-tab" @onclick='() => TogglePanel("find")' title="Find any process on the site map">⌕ <span class="fc-tool-label-long">Find process</span><span class="fc-tool-label-compact">Find</span></button>
+            </div>
+        </div>
+        <div class="fc-command-demo" aria-label="Synthetic demo simulation">
+            <div class="fc-control-presence" role="status" aria-live="off">
+                <span class="fc-signal" aria-hidden="true"></span>
+                <span class="fc-updated">1s DEMO · @LastRefresh.ToLocalTime().ToString("HH:mm:ss")</span>
+            </div>
+            <div class="fc-command-demo-actions">
+                <button class="fc-btn fc-btn-subtle" @onclick="RefreshNowAsync" title="Refresh persisted operational state">↻ Refresh</button>
+                <button class="fc-btn fc-btn-pulse @(AutoPlay ? "fc-pulsing" : "")" @onclick="TogglePlayAsync" title="Advance eligible synthetic visits automatically; never clears holds or approvals">@(AutoPlay ? "◼ Pause demo" : "▶ Live demo")</button>
+                <button class="fc-btn fc-btn-primary" @onclick="ToggleIntake">＋ Register engine</button>
+                <button class="fc-btn fc-btn-subtle" @onclick="ToggleReset">Reset demo</button>
+            </div>
+        </div>
+    </section>
+    @if (ReplayMode)
+    { <div class="fc-history-warning"><span>◷ REPLAY · @ReplayTimestamp.ToLocalTime().ToString("MMM d, HH:mm:ss")</span><span>Persisted synthetic checkpoint — not live, not authoritative maintenance evidence</span><button @onclick="GoLiveAsync">Return to live ↗</button></div> }
+
+    <section class="fc-workspace">
+        <div class="fc-toolbar">
+            <div class="fc-filterset">
+                <label class="fc-search"><span class="sr-only">Find engine or work order</span><input @bind="Search" @bind:event="oninput" placeholder="⌕  Engine, work order, operator…" /></label>
+                <label class="sr-only" for="fc-family">Engine family</label>
+                <select class="nodal-select" id="fc-family" @bind="FamilyFilter" aria-label="Engine family"><option value="">All engine families</option>@foreach (var family in Data.Engines.Select(e => e.Family).Distinct().OrderBy(x => x)) { <option value="@family">@family</option> }</select>
+                <label class="sr-only" for="fc-stage">Process stage</label>
+                <select class="nodal-select" id="fc-stage" @bind="StageFilter" aria-label="Process stage"><option value="">All process stages</option>@foreach (var stage in Map.Children("repair")) { <option value="@stage.Id">@stage.Name</option> }</select>
+                <label class="sr-only" for="fc-exceptions">Exceptions</label>
+                <select class="nodal-select" id="fc-exceptions" @bind="ExceptionFilter" aria-label="Exceptions"><option value="">All conditions</option><option value="holds">Active part holds</option><option value="waiting">Waiting workflow</option><option value="findings">Open findings</option><option value="overdue">Past target date</option></select>
+                <button class="fc-btn fc-clear" @onclick="ClearFilters" title="Remove fleet-wide filters">Clear fleet filters</button>
+            </div>
+            <div class="fc-toolbar-right"><span class="fc-readonly">✣ MOVE NODES · SHIFT-CLICK TO COMPARE · PROCESS LOCKED</span><span class="fc-legend"><i class="lc-green"></i> Complete <i class="lc-blue"></i> Active <i class="lc-amber"></i> Exception</span></div>
+        </div>
+
+        <div class="fc-map-header">
+            <nav class="fc-breadcrumbs" aria-label="Fleet process path">
+                @foreach (var crumb in Breadcrumbs)
+                {
+                    <button class="@(crumb.Id == CurrentParentId ? "selected" : "")" @onclick="() => DrillToAsync(crumb.Id)">@crumb.Name</button>
+                    @if (crumb.Id != CurrentParentId) { <span>›</span> }
+                }
+            </nav>
+            <div class="fc-map-actions">
+                <button title="Auto-arrange nodes into tidy lanes" @onclick='() => ArrangeAsync("lanes")'>Arrange lanes</button>
+                <button title="Auto-arrange nodes in a compact grid" @onclick='() => ArrangeAsync("grid")'>Grid</button>
+                <button title="Show or hide graph minimap" @onclick="ToggleMinimapAsync">@(ShowMinimap ? "Hide minimap" : "Minimap")</button>
+                <span>@Children.Count subprocesses · @Links.Count connections</span>
+                <button title="Return to parent" aria-label="Go up one process level" disabled="@(CurrentParentId == "repair")" @onclick="UpAsync">↑ Up</button>
+                <button title="Zoom out" aria-label="Zoom out" @onclick="() => ZoomAsync(0.78)">−</button>
+                <button title="Fit graph in view" @onclick="FitAsync">Fit</button>
+                <button title="Restore default layout at this drilldown level" @onclick="ResetLayoutAsync">Reset layout</button>
+                <button title="Give the graph more screen space" @onclick="ToggleGraphFocus">@(GraphFocusMode ? "Show metrics" : "Focus canvas")</button>
+                <button title="Zoom in" aria-label="Zoom in" @onclick="() => ZoomAsync(1.28)">＋</button>
+            </div>
+        </div>
+
+        <div class="fc-viewport" id="fc-viewport" aria-label="Fleet process graph. Drag node headers to rearrange, drag empty canvas to pan and scroll to zoom.">
+            <div class="fc-world" id="fc-world" style="@WorldStyle">
+                <svg class="fc-wires" width="@WorldWidth" height="@WorldHeight" viewBox="@($"0 0 {WorldWidth} {WorldHeight}")" aria-label="Process dependency connections">
+                    <defs>
+                        <marker id="fc-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7" fill="#708eae"/></marker>
+                    </defs>
+                    @foreach (var link in Links)
+                    {
+                        <path class="fc-wire @(WireFlow(link) > 0 ? "fc-flow-active" : "")" d="@Wire(link)" data-from="@link.FromId" data-to="@link.ToId" style="--flow-strength:@WireFlow(link);stroke-width:@(2.5+Math.Min(WireFlow(link),8)*0.28)px" title="Handoff projection inferred from process states, not a verified movement event" />
+                        <path class="fc-wire-hit @(SelectedLink?.FromId == link.FromId && SelectedLink?.ToId == link.ToId ? "selected" : "")"
+                              d="@Wire(link)" data-from="@link.FromId" data-to="@link.ToId" tabindex="0" role="button" aria-label="Inspect handoff from @Map.Get(link.FromId).Name to @Map.Get(link.ToId).Name"
+                              @onclick="() => SelectLink(link)" @onkeydown="(KeyboardEventArgs e) => OnWireKey(e, link)"><title>@Map.Get(link.FromId).Name → @Map.Get(link.ToId).Name</title></path>
+                    }
+                </svg>
+                @foreach (var process in Children)
+                {
+                    var summary = Summary(process);
+                    var nested = Map.Children(process.Id).Count;
+                    <div class="fc-node @((SelectedNodeId == process.Id || MultiSelectedIds.Contains(process.Id)) && SelectedLink is null ? "fc-node-selected" : "") @(FocusClass(process)) @(PressureScore(process)>=35 ? "fc-heat-hot" : PressureScore(process)>=15 ? "fc-heat-warm" : "")" style="@NodeStyle(process)" data-pressure="@PressureScore(process)" data-process-id="@process.Id" data-default-x="@DefaultX(process)" data-default-y="@DefaultY(process)" @key="process.Id">
+                        <div class="fc-node-drag" tabindex="0" role="button" aria-label="Move @process.Name; drag or use arrow keys" title="Drag to reposition · arrow keys to nudge"><span class="fc-node-icon">@ProcessCatalog.Module(process.ModuleId).Icon</span><span>@ProcessCatalog.Module(process.ModuleId).Name.ToUpperInvariant()</span><span class="fc-drag-grip">⠿ MOVE</span></div>
+                        <button class="fc-node-select" aria-label="Show engines currently at @process.Name in the fleet table; Shift or Control click for multiselect" @onclick="(MouseEventArgs e) => SelectNode(process.Id, e)">
+                            <div class="fc-node-name">@process.Name</div>
+                            <div class="fc-node-scope">@(process.Applicability == "All engines" ? "UNIVERSAL PROCESS" : "CONDITIONAL PROCESS")</div>
+                            <div class="fc-node-stats">
+                                <div class="fc-donut" style="@DonutStyle(summary)"><span>@summary.PercentComplete%</span></div>
+                                <div class="fc-node-numbers"><strong>@summary.Complete <span>/ @summary.Total complete</span></strong><small>@summary.Active active · <em>@summary.Exceptions waiting / blocked</em></small></div>
+                            </div>
+                            <div class="fc-node-bottom"><span>@summary.Holds part holds</span><span>@summary.OpenActions action items</span></div>
+                            @if (HistoryPoints.Count > 1)
+                            { <div class="fc-node-trend"><span>QUEUE TREND</span><svg viewBox="0 0 90 24" aria-label="Recent sampled queue trend"><polyline points="@TrendPoints(process)" /></svg></div> }
+                            <div class="fc-progress-label"><span>SYNTHETIC WORK PROGRESS</span><strong>@WorkProgress(process)%</strong></div>
+                            <div class="fc-work-progress" aria-label="Average synthetic progress @WorkProgress(process)%"><div style="@WorkProgressStyle(process)"></div></div>
+                        </button>
+                        @if (nested > 0)
+                        { <button class="fc-node-drill" @onclick="() => DrillToAsync(process.Id)" aria-label="Explore @nested child processes in @process.Name">Explore @nested steps ↗</button> }
+                        else
+                        { <span class="fc-node-terminal">ATOMIC CAPABILITY</span> }
+                    </div>
+                }
+                @if (Children.Count == 0)
+                {
+                    <div class="fc-leaf" style="left:140px;top:110px"><strong>@Parent.Name</strong><p>@Parent.Description</p><span>This is the deepest defined level. Select the process above to inspect every recorded repair visit.</span></div>
+                }
+            </div>
+            @if (ActivePanel.Length > 0)
+            {
+                <aside class="fc-intelligence-drawer" aria-label="Fleet intelligence tools">
+                    <div class="fc-drawer-top"><span>@PanelTitle</span><button @onclick="() => TogglePanel(ActivePanel)" title="Close intelligence panel">✕</button></div>
+                    @if (ActivePanel == "causes")
+                    {
+                        <p class="fc-drawer-intro">Explain current queues from recorded synthetic holds, findings, waits and actions. Reasons may overlap.</p>
+                        @if (BlockerGroups.Count == 0) { <div class="fc-empty-intelligence">No recorded blocker causes in this slice. Missing evidence is not treated as clearance.</div> }
+                        @foreach (var cause in BlockerGroups.Take(12))
+                        {
+                            <button class="fc-cause-row @(CauseFilterKind == cause.Kind ? "selected" : "")" @onclick="() => FilterCauseAsync(cause)">
+                                <span><strong>@cause.Kind</strong><small>@Map.Get(cause.ProcessId).Name · @cause.ActionCount open actions linked</small></span><b>@cause.Visits visits</b>
+                                <span class="fc-cause-meter"><i style="width:@(BlockerGroups.Max(x=>x.Visits)>0 ? 100*cause.Visits/BlockerGroups.Max(x=>x.Visits) : 0)%"></i></span>
+                            </button>
+                        }
+                        @if (!string.IsNullOrEmpty(CauseFilterKind)) { <button class="fc-drawer-link" @onclick="ClearCauseFilter">Clear blocker drilldown filter ✕</button> }
+                    }
+                    else if (ActivePanel == "timeline")
+                    {
+                        <p class="fc-drawer-intro">Replay sampled synthetic operating states. Checkpoints begin when this version runs; earlier states cannot be reconstructed from incomplete events.</p>
+                        <div class="fc-timeline-status"><strong>@(ReplayMode ? ReplayTimestamp.ToLocalTime().ToString("MMM d · HH:mm:ss") : "LIVE")</strong><span>@HistoryPoints.Count recorded checkpoints</span></div>
+                        <input class="fc-history-slider" type="range" aria-label="Historical checkpoint" min="0" max="@Math.Max(0,HistoryPoints.Count-1)" value="@(ReplayMode ? HistoryCursor : Math.Max(0,HistoryPoints.Count-1))" disabled="@(HistoryPoints.Count == 0)" @oninput="ScrubHistoryAsync" />
+                        <div class="fc-timeline-actions"><button @onclick="StepBackAsync" disabled="@(HistoryPoints.Count==0)">⏮ Back</button><button @onclick="ToggleReplayPlaybackAsync" disabled="@(HistoryPoints.Count==0)">@(ReplayPlaying ? "Ⅱ Pause" : "▶ Play")</button><button @onclick="StepForwardAsync" disabled="@(HistoryPoints.Count==0)">Forward ⏭</button><button @onclick="GoLiveAsync">● Live</button></div>
+                        <p class="fc-intel-caveat">Snapshots are persisted at ~8-second intervals, bounded to the most recent 180 checkpoints. Playback is read-only.</p>
+                    }
+                    else if (ActivePanel == "forecast")
+                    {
+                        <p class="fc-drawer-intro">What-if model. Adjust hypothetical capacity and arrivals; this never advances, approves or changes a repair visit.</p>
+                        <label class="fc-scenario-range">Workforce capacity <strong>@ScenarioWorkers%</strong><input type="range" min="40" max="175" step="5" @bind="ScenarioWorkers" @bind:event="oninput" /></label>
+                        <label class="fc-scenario-range">Parts availability <strong>@ScenarioParts%</strong><input type="range" min="35" max="100" step="5" @bind="ScenarioParts" @bind:event="oninput" /></label>
+                        <label class="fc-scenario-range">Engineering / inspection capacity <strong>@ScenarioEngineering%</strong><input type="range" min="40" max="160" step="5" @bind="ScenarioEngineering" @bind:event="oninput" /></label>
+                        <label class="fc-scenario-range">Hypothetical incoming visits/day <strong>@ScenarioArrivals</strong><input type="range" min="0" max="25" step="1" @bind="ScenarioArrivals" @bind:event="oninput" /></label>
+                        <div class="fc-forecast-list">
+                            @foreach (var projection in ForecastRows.Take(7))
+                            { <div class="fc-forecast-row"><div><strong>@projection.Name</strong><small>@projection.Queue in queue · @projection.DailyCapacity simulated visits/day</small></div><div><strong>@projection.ScenarioDays.ToString("0.0") d</strong><small class="@(projection.ChangePercent > 0 ? "fc-risk" : "fc-gain")">@(projection.ChangePercent>=0?"+":"")@projection.ChangePercent% vs baseline</small></div></div> }
+                        </div>
+                        <p class="fc-intel-caveat">Illustrative queue/capacity arithmetic, not a production forecast or airworthiness prediction. Actual staffing, routings, durations and causal relationships are not calibrated.</p>
+                    }
+                    else if (ActivePanel == "views")
+                    {
+                        <p class="fc-drawer-intro">Save the scope, process slice, filters, graph positions and viewport together. Shared only within this demo server; no authentication.</p>
+                        <label class="fc-save-name">Investigation name<input @bind="NewViewName" maxlength="70" placeholder="e.g. Morning engineering bottlenecks" /></label>
+                        <button class="fc-intel-primary" @onclick="SaveInvestigationAsync">＋ Save current investigation</button>
+                        <div class="fc-saved-list">
+                            @foreach (var view in SavedViews)
+                            { <div class="fc-saved-row"><button @onclick="() => OpenInvestigationAsync(view)"><strong>@view.Name</strong><small>@view.Scope · @view.SavedUtc.ToLocalTime().ToString("MMM d, HH:mm")</small></button><button class="fc-delete-view" title="Delete saved investigation" @onclick="() => DeleteInvestigationAsync(view.Id)">✕</button></div> }
+                            @if (SavedViews.Count == 0) { <div class="fc-empty-intelligence">No saved investigations yet.</div> }
+                        </div>
+                    }
+                    else if (ActivePanel == "find")
+                    {
+                        <label class="fc-save-name">Jump to process<input @bind="ProcessFindQuery" @bind:event="oninput" placeholder="Name, module or process ID…" /></label>
+                        <div class="fc-saved-list">
+                            @foreach (var p in ProcessFindResults.Take(20))
+                            { <button class="fc-process-result" @onclick="() => NavigateToProcessAsync(p)"><strong>@p.Name</strong><small>@ProcessCatalog.Module(p.ModuleId).Name · @p.Id</small></button> }
+                        </div>
+                    }
+                </aside>
+            }
+            <div class="fc-canvas-stamp"><span class="fc-signal"></span> LIVE PROJECTION · SYNTHETIC DATA <span>/</span> @Parent.Name.ToUpperInvariant()</div>
+            <div class="fc-zoom-guide">Drag nodes to arrange · Drag background to pan · Wheel to zoom · Explore steps to dive</div>
+            <button class="fc-jump-to-results" @onclick="JumpToTableAsync" title="See the full-height fleet table">Explore fleet table ↓</button>
+            @if (FocusedEngine is not null)
+            {
+                <div class="fc-focus-banner"><span class="fc-signal"></span><span><strong>TRACKING @FocusedEngine.Id</strong><small>@FocusedEngine.WorkOrder · @FleetAnalytics.CurrentProcess(FocusedEngine) · @FocusedBlockers.Count causal signals</small></span><button @onclick="ToggleFocusInspector" title="Show engine digital thread">Details ↗</button><button @onclick="ClearEngineFocus" title="Clear engine highlight">✕</button></div>
+                @if (ShowFocusInspector)
+                {
+                    <aside class="fc-focus-inspector" aria-label="Focused engine digital thread">
+                        <div class="fc-drawer-top"><span>ENGINE DIGITAL THREAD</span><button @onclick="ToggleFocusInspector">✕</button></div>
+                        <h3>@FocusedEngine.Id</h3><p>@FocusedEngine.Family · @FocusedEngine.WorkOrder · @FocusedEngine.Cell</p>
+                        <div class="fc-thread-summary"><span>@Data.Parts.Count(p=>p.EngineId==FocusedEngine.Id) parts</span><span>@Data.Findings.Count(f=>f.EngineId==FocusedEngine.Id) findings</span><span>@Actions.Actions.Count(a=>a.EngineReference==FocusedEngine.Id) actions</span></div>
+                        <strong class="fc-thread-label">ACTIVE DEPENDENCIES</strong>
+                        @foreach (var cause in FocusedBlockers.Take(8)) { <div class="fc-thread-cause"><span>@cause.Kind</span><small>@cause.Detail</small></div> }
+                        @if (FocusedBlockers.Count == 0) { <small>No recorded causal blocker signals for this visit.</small> }
+                        <strong class="fc-thread-label">LINKED ACTION ITEMS</strong>
+                        @foreach (var action in Actions.Actions.Where(a=>a.EngineReference==FocusedEngine.Id && a.Status!="Done").Take(5))
+                        { <div class="fc-thread-cause"><a class="fc-thread-action-link" href="@OperationalRouting.Action(action.Id)">@action.Id · @action.Title ↗</a><small>@action.Status · @action.Priority</small></div> }
+                        <strong class="fc-thread-label">RECORDED EVENTS</strong>
+                        @foreach (var ev in Data.Events.Where(e=>e.EngineId==FocusedEngine.Id).OrderByDescending(e=>e.TimestampUtc).Take(10))
+                        { <div class="fc-thread-event"><time>@ev.TimestampUtc.ToLocalTime().ToString("MMM d HH:mm")</time><strong>@ev.EventType</strong><small>@ev.Detail</small></div> }
+                        <button class="fc-intel-primary" @onclick="() => OpenEngineAsync(FocusedEngine.Id)">Open full repair visit ↗</button>
+                    </aside>
+                }
+            }
+        </div>
+
+    </section> @* End graph workspace *@
+    </section> @* End full-height map screen *@
+
+    <section class="fc-bottom fc-detail-screen" id="fc-detail-screen" aria-label="Fleet repair visit detail table" tabindex="-1">
+        <div class="fc-panel-head">
+            <div class="fc-panel-label">
+                <span class="fc-panel-kicker">@(SelectedLink is not null ? "PROCESS HANDOFF" : SelectedNodeId is not null ? "PROCESS SLICE" : "FLEET VISITS") · @SliceRows.Count MATCHING / @Filtered.Count FLEET-FILTERED</span>
+                <h2>@SelectionTitle</h2>
+                @if (MultiSelectedIds.Count > 1) { <small class="fc-multiselect-guide">@MultiSelectedIds.Count selected processes · Shift/Ctrl-click other nodes to refine this slice</small> }
+                <p>@SelectionSubtitle</p>
+                @if (SelectedNodeId is not null || SelectedLink is not null)
+                { <button class="fc-process-chip" @onclick="ClearProcessFilter" title="Remove only the selected process filter; keep table search and fleet filters"><span>⌁</span> @SelectionTitle <strong>✕ CLEAR PROCESS</strong></button> }
+                else
+                { <span class="fc-process-chip fc-no-selection">◇ All process locations · Select a node above to narrow the fleet</span> }
+            </div>
+            <div class="fc-panel-buttons">
+                @if (!string.IsNullOrEmpty(CauseFilterKind)) { <button class="fc-btn fc-btn-subtle" @onclick="ClearCauseFilter">⚡ @CauseFilterKind ✕</button> }
+                <button class="fc-btn fc-btn-primary fc-return-map" @onclick="ReturnToMapAsync">↑ Return to live map</button>
+                @if (SelectedNodeId is not null && Map.Children(SelectedNodeId).Count > 0)
+                { <button class="fc-btn fc-btn-subtle" @onclick="() => DrillToAsync(SelectedNodeId!)">Explore subprocesses ↗</button> }
+            </div>
+        </div>
+
+        <div class="fc-slice-stats" aria-label="Statistics for the selected process and table filters">
+            @if (SelectedLink is not null)
+            {
+                <div><span>MATCHING VISITS</span><strong>@SliceRows.Count</strong></div>
+                <div><span>SOURCE COMPLETE</span><strong class="fc-green">@LinkMetrics.SourceComplete</strong></div>
+                <div><span>TRANSITIONED</span><strong>@LinkMetrics.Transitioned</strong></div>
+                <div><span>HANDOFF CONVERSION</span><strong>@LinkMetrics.ConversionPercent%</strong></div>
+                <div><span>WAITING / BLOCKED</span><strong class="fc-amber">@LinkMetrics.Exceptions</strong></div>
+                <div><span>PART HOLDS</span><strong>@Slice.Holds</strong></div>
+            }
+            else
+            {
+                <div><span>VISIBLE VISITS</span><strong>@SliceRows.Count</strong></div>
+                <div><span>COMPLETED</span><strong class="fc-green">@Slice.Complete</strong></div>
+                <div><span>ACTIVE / READY</span><strong>@Slice.Active</strong></div>
+                <div><span>WAITING / BLOCKED</span><strong class="fc-amber">@Slice.Exceptions</strong></div>
+                <div><span>PART HOLDS</span><strong>@Slice.Holds</strong></div>
+                <div><span>OPEN ACTIONS</span><strong>@Slice.OpenActions</strong></div>
+            }
+        </div>
+
+        <div class="fc-table-explorer" aria-label="Search and filter repair visits within the selected process">
+            <label class="fc-table-search"><span class="sr-only">Search engine visits</span><span aria-hidden="true">⌕</span><input @bind="TableSearch" @bind:event="oninput" placeholder="Search engine ID, work order, customer, scope, location…" /></label>
+            <label class="sr-only" for="fc-table-family">Filter table by engine family</label>
+            <select class="nodal-select" id="fc-table-family" @bind="TableFamilyFilter" aria-label="Table engine family">
+                <option value="">All engine families</option>
+                @foreach (var family in Filtered.Select(e => e.Family).Distinct().OrderBy(x => x))
+                { <option value="@family">@family</option> }
+            </select>
+            <label class="sr-only" for="fc-table-condition">Filter table by exception</label>
+            <select class="nodal-select" id="fc-table-condition" @bind="TableConditionFilter" aria-label="Table exceptions">
+                <option value="">All conditions</option><option value="holds">Part hold</option><option value="findings">Open finding</option><option value="waiting">Workflow wait</option><option value="overdue">Past target date</option>
+            </select>
+            <label class="sr-only" for="fc-table-sort">Sort table</label>
+            <select class="nodal-select" id="fc-table-sort" @bind="TableSort" aria-label="Sort visits">
+                <option value="exceptions">Exceptions first</option><option value="engine">Engine ID</option><option value="due">Target date</option><option value="progress">Most progressed</option>
+            </select>
+            <button class="fc-btn fc-btn-subtle" @onclick="ClearTableFilters" title="Clear only the manual filters in this table">Reset table filters</button>
+        </div>
+
+        <div class="fc-table-toolbar">
+            <div class="fc-condition-filters" aria-label="Process state filters">
+                @if (MultiSelectedIds.Count > 1)
+                { <button class="@(MultiMatchMode=="union"?"selected":"")" @onclick='() => SetMultiMatch("union")'>Any selected node</button><button class="@(MultiMatchMode=="intersection"?"selected":"")" @onclick='() => SetMultiMatch("intersection")'>All selected nodes</button> }
+                @if (SelectedNodeId is not null || SelectedLink is not null)
+                {
+                    @foreach (var filter in StatusFilters)
+                    { <button class="@(SliceStatusFilter == filter.Key ? "selected" : "")" @onclick="() => SetSliceFilter(filter.Key)">@((filter.Key == "current" && SelectedLink is not null) ? "At handoff" : filter.Label)</button> }
+                }
+                else
+                { <span class="fc-all-records">◇ All repair visits · Choose a process to see its current work queue</span> }
+            </div>
+            <span><strong>@SliceRows.Count</strong> matching visits · Select any row to fly to its current node</span>
+        </div>
+
+        <div class="fc-table-scroll" id="fc-table-scroll">
+            <table class="fc-table"><thead><tr><th>ENGINE / VISIT</th><th>ENGINE FAMILY</th><th>@(SelectedLink is null ? "PROCESS STATE" : "SOURCE → DESTINATION")</th><th>LOCATION</th><th>EXCEPTIONS</th><th>WORK SCOPE</th><th>LOCATE / OPEN</th></tr></thead>
+                <tbody>
+                    @foreach (var row in PageRows)
+                    {
+                        <tr class="fc-engine-row @(FocusedEngineId == row.Engine.Id ? "fc-engine-row-selected" : "")" tabindex="0" role="button" aria-label="Locate engine @row.Engine.Id on the process graph" title="Return to map and spotlight this engine" @onclick="() => FocusEngine(row.Engine.Id)" @onkeydown="(KeyboardEventArgs e) => OnEngineRowKey(e, row.Engine.Id)" @key="row.Engine.Id">
+                            <td data-label="ENGINE / VISIT"><strong>@row.Engine.Id</strong><small>@row.Engine.WorkOrder · @row.Engine.Customer</small></td>
+                            <td data-label="ENGINE FAMILY">@row.Engine.Family<small>@row.Engine.Aircraft</small></td>
+                            <td data-label="PROCESS STATE"><span class="fc-status-pill @FleetAnalytics.ClassName(row.Status)">@(MultiSelectedIds.Count>1 ? "In selected slice" : row.Status)</span>@if (MultiSelectedIds.Count>1) { <small>@row.MatchedProcesses</small> }@if (SelectedLink is not null) { <small>→ @row.TargetStatus</small> }</td>
+                            <td data-label="LOCATION">@row.Engine.Cell</td>
+                            <td data-label="EXCEPTIONS"><span class="fc-exception-indicators">@row.Holds holds · @row.Findings findings · @row.Waits waits</span></td>
+                            <td data-label="WORK SCOPE">@row.Engine.Scope</td>
+                            <td class="fc-row-actions" data-label="ACTIONS"><span class="fc-locate-hint">◎ Locate ↗</span><button class="fc-inspect" @onclick="() => OpenEngineAsync(row.Engine.Id)" @onclick:stopPropagation="true">Open visit ↗</button></td>
+                        </tr>
+                    }
+                    @if (PageRows.Count == 0)
+                    { <tr><td colspan="7" class="fc-no-results"><strong>No matching repair visits</strong><p>Change the process-state filter, search terms, or conditions—or clear the selected process to see the whole fleet.</p><button class="fc-btn fc-btn-subtle" @onclick="ClearAllFilters">Clear all filters</button></td></tr> }
+                </tbody>
+            </table>
+        </div>
+        <div class="fc-panel-footer"><div><span class="fc-live-dot">●</span> SYNTHETIC TELEMETRY · UPDATES EACH SECOND · NEVER AN AIRWORTHINESS DETERMINATION</div><div class="fc-pagination"><button disabled="@(Page <= 1)" @onclick="PreviousPage">← Previous</button><span>@Math.Min(Page, PageCount) / @PageCount</span><button disabled="@(Page >= PageCount)" @onclick="NextPage">Next →</button></div></div>
+    </section>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ProcessSnapshot State { get; set; } = new();
+    [Parameter, EditorRequired] public ProcessMapSnapshot Map { get; set; } = ProcessMapSnapshot.Seed();
+    [Parameter] public EventCallback<string> OnOpenEngine { get; set; }
+    [Parameter] public string? InitialFocusEngineId { get; set; }
+    private ProcessSnapshot Data = new();
+    private OperationsSnapshot Actions = new();
+    private ProcessSnapshot LiveData = new();
+    private OperationsSnapshot LiveActions = new();
+    private List<FleetHistoryIndex> HistoryPoints = [];
+    private List<FleetInvestigationView> SavedViews = [];
+    private string ActivePanel = "", HeatmapMetric = "pressure", ScopeMode = "site", SelectedWorkspaceId = "cec", ScopeEngineId = "";
+    private string CauseFilterKind = "", ProcessFindQuery = "", NewViewName = "", MultiMatchMode = "union";
+    private HashSet<string> MultiSelectedIds = new(StringComparer.Ordinal);
+    private bool ReplayMode, ReplayPlaying, ShowMinimap = true, ShowFocusInspector, RestoreViewPending;
+    private int HistoryCursor, ScenarioWorkers = 100, ScenarioParts = 85, ScenarioEngineering = 100, ScenarioArrivals = 4;
+    private DateTimeOffset ReplayTimestamp;
+    private FleetLayoutCapture? RestoredLayout;
+    private string PanelTitle => ActivePanel switch { "causes"=>"WHAT'S BLOCKING THE FLOW?", "timeline"=>"OPERATIONAL TIME MACHINE", "forecast"=>"SCENARIO SANDBOX", "views"=>"SAVED INVESTIGATIONS", "find"=>"FIND A PROCESS", _=>"INTELLIGENCE" };
+    private List<ProcessDefinition> ProcessFindResults => Map.Processes.Where(p=>string.IsNullOrWhiteSpace(ProcessFindQuery) ||
+        (p.Name+" "+p.Id+" "+p.ModuleId).Contains(ProcessFindQuery,StringComparison.OrdinalIgnoreCase)).ToList();
+    private List<FleetBlockerGroup> BlockerGroups => FleetInsights.Breakdown(SliceRows.Select(r=>r.Engine),Data,Actions);
+    private List<FleetBlocker> FocusedBlockers => FocusedEngine is null ? [] : FleetInsights.BlockersFor(FocusedEngine,Data,Actions);
+    private List<FleetForecastRow> ForecastRows => FleetInsights.Forecast(Children,Filtered,Map,ScenarioWorkers,ScenarioArrivals,ScenarioParts,ScenarioEngineering);
+    private int PressureScore(ProcessDefinition process) => FleetInsights.Pressure(process,Filtered,Map,Data,HeatmapMetric);
+    private int WireFlow(ProcessLink link) => FleetAnalytics.SummarizeLink(Map.Get(link.FromId),Map.Get(link.ToId),Filtered,Map).Transitioned;
+    private string TrendPoints(ProcessDefinition p)
+    {
+        var points=HistoryPoints.TakeLast(16).ToList();
+        if (points.Count<2) return "";
+        var values=points.Select(x=>x.Queues.GetValueOrDefault(p.Id)).ToList();
+        var max=Math.Max(1,values.Max());
+        return string.Join(" ",values.Select((n,i)=>$"{(i*90.0/(values.Count-1)).ToString("0.0",System.Globalization.CultureInfo.InvariantCulture)},{(21.0 - 17.0*n/max).ToString("0.0",System.Globalization.CultureInfo.InvariantCulture)}"));
+    }
+    private bool CanvasReady, FitPending, RevealPending, GraphRevealPending, FocusPending, GraphFocusMode;
+    private string? FocusedEngineId;
+    private readonly List<FleetUpdate> PendingUpdates = [];
+    private sealed record FleetUpdate(string ProcessId, bool Completed);
+    private CancellationTokenSource? LoopCancel;
+    private Task? RefreshLoop;
+    private DateTimeOffset LastRefresh = DateTimeOffset.UtcNow;
+    private string CurrentParentId = "repair";
+    private string? SelectedNodeId;
+    private ProcessLink? SelectedLink;
+    private bool AutoPlay = true, ShowIntake, ShowReset, Busy, NotificationError;
+    private string Notification = "";
+    private string Search = "", FamilyFilter = "", StageFilter = "", ExceptionFilter = "", SliceStatusFilter = "all";
+    private string TableSearch = "", TableFamilyFilter = "", TableConditionFilter = "", TableSort = "exceptions";
+    private string NewFamily = "PW1100G-JM", NewAircraft = "Airbus A320neo family";
+    private int Page = 1;
+    private const int PageSize = 24;
+    private static readonly (string Key, string Label)[] StatusFilters =
+    [ ("current", "At this step"), ("all", "All eligible"), ("Complete", "Complete"), ("In progress", "Active"), ("Waiting", "Waiting"), ("Blocked", "Blocked"), ("Not started", "Not started") ];
+    private ProcessDefinition Parent => Map.Get(CurrentParentId);
+    private List<ProcessDefinition> Children => Map.Children(CurrentParentId).ToList();
+    private List<ProcessLink> Links => Map.Links.Where(l => l.ParentId == CurrentParentId).ToList();
+    // Fleet positions are intentionally roomier than their source process-map defaults.
+    // These are VIEW coordinates, not edits to the process definitions.
+    private static int DefaultX(ProcessDefinition p) => (int)Math.Round(p.X * 1.14);
+    private static int DefaultY(ProcessDefinition p) => (int)Math.Round(p.Y * 1.24);
+    private int WorldWidth => Math.Max(1120, Children.Count == 0 ? 1120 : Children.Max(p => DefaultX(p) + 365));
+    private int WorldHeight => Math.Max(460, Children.Count == 0 ? 460 : Children.Max(p => DefaultY(p) + 285));
+    private string WorldStyle => $"width:{WorldWidth}px;height:{WorldHeight}px";
+    private EngineCase? FocusedEngine => Data.Engines.FirstOrDefault(e => e.Id == FocusedEngineId);
+    private string FocusClass(ProcessDefinition p)
+    {
+        if (FocusedEngine is null) return "";
+        var status = FleetAnalytics.Status(FocusedEngine, p, Map);
+        return status switch
+        {
+            "Blocked" or "Waiting" or "In progress" or "Ready" => "fc-engine-current",
+            "Complete" => "fc-engine-trail",
+            _ => ""
+        };
+    }
+    private int WorkProgress(ProcessDefinition process)
+    {
+        var eligible = Filtered.Where(e => FleetAnalytics.Status(e, process, Map) != "Not applicable").ToArray();
+        return eligible.Length == 0 ? 0 : (int)Math.Round(eligible.Average(e => FleetAnalytics.Progress(e, process, Map)));
+    }
+    private string[] ActiveFocusIds() => FocusedEngine is null ? [] : Children
+        .Where(p => FleetAnalytics.Status(FocusedEngine, p, Map) is "Blocked" or "Waiting" or "In progress" or "Ready")
+        .OrderBy(p => FleetAnalytics.Status(FocusedEngine, p, Map) is "Blocked" or "Waiting" ? 0 : 1)
+        .Select(p => p.Id).ToArray();
+    private string[] CompletedFocusIds() => FocusedEngine is null ? [] : Children
+        .Where(p => FleetAnalytics.Status(FocusedEngine, p, Map) == "Complete").Select(p => p.Id).ToArray();
+    private List<EngineCase> Filtered
+    {
+        get
+        {
+            var workspaceEngines = ScopeMode == "workspace"
+                ? OperationsRollups.ActionsFor(Actions,SelectedWorkspaceId).Select(a=>a.EngineReference).ToHashSet(StringComparer.Ordinal)
+                : null;
+            return Data.Engines.Where(e =>
+                (ScopeMode != "engine" || e.Id == ScopeEngineId) &&
+                (workspaceEngines is null || workspaceEngines.Contains(e.Id)) &&
+                FleetAnalytics.MatchesFilter(e, Data, Search, FamilyFilter, StageFilter, ExceptionFilter)).ToList();
+        }
+    }
+    private int ActionCount => Actions.Actions.Count(a => Filtered.Any(e => e.Id == a.EngineReference) && a.Status != "Done");
+    private List<ProcessDefinition> Breadcrumbs
+    {
+        get
+        {
+            var result = new List<ProcessDefinition>();
+            var id = CurrentParentId;
+            var seen = new HashSet<string>();
+            while (seen.Add(id))
+            {
+                var found = Map.Processes.FirstOrDefault(p => p.Id == id);
+                if (found is null) break;
+                result.Add(found);
+                if (found.ParentId is null) break;
+                id = found.ParentId;
+            }
+            result.Reverse(); return result;
+        }
+    }
+    private FleetSliceSummary Summary(ProcessDefinition process) => FleetAnalytics.Summarize(process, Filtered, Map, Data, Actions);
+    private int HoldCount(string engine) => Data.Parts.Count(p => p.EngineId == engine && p.Held);
+    private int FindingCount(string engine) => Data.Findings.Count(f => f.EngineId == engine && f.Status != "Cleared (demo)");
+    private int WaitCount(string engine) => Data.Runs.Count(r => r.EngineId == engine && r.Status == "Waiting");
+    private ProcessDefinition SelectionProcess => Map.Get(SelectedNodeId ?? "repair");
+    private string SelectionTitle => MultiSelectedIds.Count > 1 ? $"{MultiSelectedIds.Count} selected process segments" : SelectedLink is { } link ? $"{Map.Get(link.FromId).Name} → {Map.Get(link.ToId).Name}" : SelectedNodeId is null ? "All engine repair visits" : SelectionProcess.Name;
+    private string SelectionSubtitle => MultiSelectedIds.Count > 1 ? $"{(MultiMatchMode == "union" ? "Any" : "All")} selected process nodes, using active / waiting / blocked / ready state. Select nodes with Shift or Ctrl." : SelectedLink is { } link
+        ? "Recorded progress across a defined process dependency, including waiting handoffs."
+        : SelectedNodeId is null ? "The full fleet with its recorded progress. Search, sort, or select a process on the map to isolate a work queue." : SelectionProcess.Description;
+    private FleetSliceSummary Slice => FleetAnalytics.Summarize(SelectedLink is { } l ? Map.Get(l.ToId) : SelectionProcess, SliceRows.Select(r => r.Engine), Map, Data, Actions);
+    private FleetLinkSummary LinkMetrics => SelectedLink is { } link
+        ? FleetAnalytics.SummarizeLink(Map.Get(link.FromId), Map.Get(link.ToId), SliceRows.Select(r => r.Engine), Map)
+        : new FleetLinkSummary(0, 0, 0, 0);
+
+    private sealed record VisitRow(EngineCase Engine, string Status, string TargetStatus, int Holds, int Findings, int Waits, string MatchedProcesses);
+
+    private static bool MatchesManualText(EngineCase engine, string query) =>
+        string.IsNullOrWhiteSpace(query) ||
+        (engine.Id + " " + engine.WorkOrder + " " + engine.Family + " " + engine.Cell + " " + engine.Customer + " " + engine.Scope + " " + engine.Aircraft)
+            .Contains(query.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private List<VisitRow> SliceRows
+    {
+        get
+        {
+            var process = SelectedLink is { } link ? Map.Get(link.FromId) : SelectionProcess;
+            var destination = SelectedLink is { } selected ? Map.Get(selected.ToId) : null;
+            IEnumerable<VisitRow> rows = Filtered.Select(engine =>
+            {
+                var from = FleetAnalytics.Status(engine, process, Map);
+                var to = destination is null ? "" : FleetAnalytics.Status(engine, destination, Map);
+                var matched = MultiSelectedIds.Count>1
+                    ? string.Join(" · ",MultiSelectedIds.Where(id=>FleetVisitSlicer.IsCurrent(FleetAnalytics.Status(engine,Map.Get(id),Map))).Select(id=>Map.Get(id).Name))
+                    : "";
+                return new VisitRow(engine, MultiSelectedIds.Count>1 && matched.Length>0?"In progress":from, to, HoldCount(engine.Id), FindingCount(engine.Id), WaitCount(engine.Id),matched);
+            });
+            if (MultiSelectedIds.Count > 1)
+            {
+                rows = rows.Where(r => FleetVisitSlicer.MatchesProcesses(r.Engine,MultiSelectedIds,MultiMatchMode,Map));
+            }
+            else if (SelectedNodeId is not null || destination is not null)
+            {
+                rows = rows.Where(r => r.Status != "Not applicable" && (destination is null || r.TargetStatus != "Not applicable"));
+                rows = rows.Where(r => FleetVisitSlicer.MatchesStatus(
+                    r.Status, r.TargetStatus, SliceStatusFilter, destination is not null));
+            }
+            if (!string.IsNullOrEmpty(CauseFilterKind))
+                rows = rows.Where(r => FleetInsights.BlockersFor(r.Engine, Data, Actions).Any(b=>b.Kind==CauseFilterKind));
+            rows = rows.Where(r => MatchesManualText(r.Engine, TableSearch)
+                && (string.IsNullOrEmpty(TableFamilyFilter) || r.Engine.Family == TableFamilyFilter)
+                && (TableConditionFilter switch
+                {
+                    "holds" => r.Holds > 0,
+                    "findings" => r.Findings > 0,
+                    "waiting" => r.Waits > 0,
+                    "overdue" => r.Engine.TargetUtc < DateTimeOffset.UtcNow,
+                    _ => true
+                }));
+            return (TableSort switch
+            {
+                "engine" => rows.OrderBy(r => r.Engine.Id, StringComparer.OrdinalIgnoreCase),
+                "due" => rows.OrderBy(r => r.Engine.TargetUtc).ThenBy(r => r.Engine.Id),
+                "progress" => rows.OrderByDescending(r => FleetAnalytics.Progress(r.Engine, process, Map)).ThenBy(r => r.Engine.Id),
+                _ => rows.OrderByDescending(r => r.Holds + r.Waits + r.Findings).ThenBy(r => r.Engine.Id)
+            }).ToList();
+        }
+    }
+    private int PageCount => Math.Max(1, (int)Math.Ceiling(SliceRows.Count / (double)PageSize));
+    private List<VisitRow> PageRows => SliceRows.Skip((Math.Clamp(Page, 1, PageCount) - 1) * PageSize).Take(PageSize).ToList();
+    private string NodeStyle(ProcessDefinition p) => $"left:{DefaultX(p)}px;top:{DefaultY(p)}px;--node-hue:{ProcessCatalog.Module(p.ModuleId).Color}";
+    private string DonutStyle(FleetSliceSummary s) => $"--fill:{s.PercentComplete}%;";
+    private string WorkProgressStyle(ProcessDefinition p) => $"width:{WorkProgress(p)}%";
+    private string Wire(ProcessLink link)
+    {
+        var from = Map.Get(link.FromId); var to = Map.Get(link.ToId);
+        var x1 = DefaultX(from) + 304; var y1 = DefaultY(from) + 105;
+        var x2 = DefaultX(to); var y2 = DefaultY(to) + 105;
+        var tension = Math.Max(65, Math.Abs(x2 - x1) * .47);
+        return $"M{x1},{y1} C{x1 + tension},{y1} {x2 - tension},{y2} {x2},{y2}";
+    }
+    protected override async Task OnInitializedAsync()
+    {
+        Data = State;
+        Actions = await Operations.SnapshotAsync();
+        LiveData = Data;
+        LiveActions = Actions;
+        ScopeEngineId = Data.Engines.FirstOrDefault()?.Id ?? "";
+        if (!string.IsNullOrWhiteSpace(InitialFocusEngineId) && Data.Engines.Any(e=>e.Id==InitialFocusEngineId))
+        {
+            FocusedEngineId = InitialFocusEngineId;
+            ScopeEngineId = InitialFocusEngineId;
+            FocusPending = true;
+            ShowFocusInspector = true;
+        }
+        await Intelligence.SampleAsync(LiveData,LiveActions,Map);
+        HistoryPoints = await Intelligence.TimelineAsync();
+        SavedViews = await Intelligence.ViewsAsync();
+        LastRefresh = DateTimeOffset.UtcNow;
+        LoopCancel = new CancellationTokenSource();
+        RefreshLoop = RefreshPeriodicallyAsync(LoopCancel.Token);
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!CanvasReady)
+        {
+            await JS.InvokeVoidAsync("nodalFleet.init", "fc-viewport", "fc-world", CurrentParentId);
+            CanvasReady = true;
+            FitPending = false;
+        }
+        else
+        {
+            await JS.InvokeVoidAsync("nodalFleet.sync", CurrentParentId);
+        }
+        if (RestoreViewPending && RestoredLayout is not null)
+        {
+            RestoreViewPending = false;
+            await JS.InvokeVoidAsync("nodalFleet.applyView", RestoredLayout);
+            if (FocusedEngine is not null)
+                await JS.InvokeVoidAsync("nodalFleet.highlightFocus", ActiveFocusIds(), CompletedFocusIds());
+        }
+        if (FitPending)
+        {
+            FitPending = false;
+            await JS.InvokeVoidAsync("nodalFleet.fit");
+        }
+        if (FocusPending && FocusedEngine is not null)
+        {
+            FocusPending = false;
+            await JS.InvokeVoidAsync("nodalFleet.focusEngine", FocusedEngine.Id, ActiveFocusIds(), CompletedFocusIds());
+            await JS.InvokeVoidAsync("nodalFleet.highlightCauses", FocusedBlockers.Select(b=>b.ProcessId).Distinct().ToArray());
+        }
+        if (PendingUpdates.Count > 0)
+        {
+            var updates = PendingUpdates.ToArray();
+            PendingUpdates.Clear();
+            await JS.InvokeVoidAsync("nodalFleet.animateUpdates", updates);
+        }
+        if (GraphRevealPending)
+        {
+            GraphRevealPending = false;
+            await JS.InvokeVoidAsync("nodalFleet.revealGraph");
+        }
+        if (RevealPending)
+        {
+            RevealPending = false;
+            await JS.InvokeVoidAsync("nodalFleet.revealPanel");
+        }
+    }
+    private async Task RefreshPeriodicallyAsync(CancellationToken cancellation)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            while (await timer.WaitForNextTickAsync(cancellation))
+            {
+                await InvokeAsync(async () =>
+                {
+                    if (AutoPlay) await ProcessStore.AdvanceFleetDemoAsync();
+                    await RefreshNowAsync();
+                    if (ReplayMode && ReplayPlaying) await StepForwardAsync();
+                });
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+    private async Task RefreshNowAsync()
+    {
+        var prior = LiveData;
+        LiveData = await ProcessStore.SnapshotAsync();
+        LiveActions = await Operations.SnapshotAsync();
+        await Intelligence.SampleAsync(LiveData,LiveActions,Map);
+        var newest = await Intelligence.TimelineAsync();
+        if (newest.Count != HistoryPoints.Count || newest.LastOrDefault()?.Id != HistoryPoints.LastOrDefault()?.Id)
+        {
+            HistoryPoints = newest;
+            if (ReplayMode && !HistoryPoints.Any(x => x.Id == ReplayTimestamp.ToUnixTimeMilliseconds().ToString()))
+                ReplayPlaying = false;
+        }
+        PendingUpdates.Clear();
+        if (!ReplayMode)
+        {
+            Data = LiveData;
+            Actions = LiveActions;
+            var priorById = prior.Engines.ToDictionary(e => e.Id);
+            foreach (var engine in Data.Engines)
+            {
+                if (!priorById.TryGetValue(engine.Id, out var old)) continue;
+                foreach (var process in Children)
+                {
+                    var was = old.StageProgress.GetValueOrDefault(process.Id);
+                    var now = engine.StageProgress.GetValueOrDefault(process.Id);
+                    var oldStatus = old.Stages.GetValueOrDefault(process.Id);
+                    var newStatus = engine.Stages.GetValueOrDefault(process.Id);
+                    if (was != now || oldStatus != newStatus)
+                        PendingUpdates.Add(new FleetUpdate(process.Id, oldStatus != "Complete" && newStatus == "Complete"));
+                }
+            }
+            var unique = PendingUpdates.GroupBy(x=>x.ProcessId)
+                .Select(g=>new FleetUpdate(g.Key,g.Any(x=>x.Completed))).Take(20).ToArray();
+            PendingUpdates.Clear();PendingUpdates.AddRange(unique);
+        }
+        LastRefresh = DateTimeOffset.UtcNow;
+        StateHasChanged();
+    }
+    private void TogglePanel(string panel) => ActivePanel = ActivePanel == panel ? "" : panel;
+    private void SetScope(string scope)
+    {
+        ScopeMode=scope;
+        if (scope=="engine")
+        {
+            ScopeEngineId = FocusedEngineId ?? (string.IsNullOrEmpty(ScopeEngineId) ? Data.Engines.FirstOrDefault()?.Id ?? "" : ScopeEngineId);
+            FocusedEngineId=ScopeEngineId; FocusPending=true;
+        }
+        else if (scope=="site") { FocusedEngineId=null;FocusPending=false;ShowFocusInspector=false; }
+        FitPending=true;
+    }
+    private void ToggleFocusInspector()=>ShowFocusInspector=!ShowFocusInspector;
+    private async Task ToggleMinimapAsync()
+    {
+        ShowMinimap=!ShowMinimap;
+        await JS.InvokeVoidAsync("nodalFleet.setMinimap",ShowMinimap);
+    }
+    private Task ArrangeAsync(string style)=>JS.InvokeVoidAsync("nodalFleet.autoLayout",style).AsTask();
+    private void ClearCauseFilter(){ CauseFilterKind=""; Page=1; }
+    private async Task FilterCauseAsync(FleetBlockerGroup cause)
+    {
+        CauseFilterKind=cause.Kind; Page=1;
+        await JS.InvokeVoidAsync("nodalFleet.highlightCauses",new[] { cause.ProcessId });
+        RevealPending=true;
+    }
+    private async Task NavigateToProcessAsync(ProcessDefinition process)
+    {
+        var parent=process.ParentId ?? "repair";
+        CurrentParentId=parent;
+        MultiSelectedIds.Clear();SelectedNodeId=process.Id;SelectedLink=null;
+        SliceStatusFilter="current";Page=1;
+        ActivePanel="";
+        FitPending=true;
+        await Task.CompletedTask;
+    }
+    private async Task GoLiveAsync()
+    {
+        ReplayMode=false;ReplayPlaying=false;
+        Data=LiveData;Actions=LiveActions;
+        FocusPending=FocusedEngineId is not null;
+        HistoryCursor=Math.Max(0,HistoryPoints.Count-1);
+        PendingUpdates.Clear();
+        StateHasChanged();await Task.CompletedTask;
+    }
+    private async Task ScrubHistoryAsync(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(),out var index)) await JumpToHistoryAsync(index);
+    }
+    private async Task JumpToHistoryAsync(int index)
+    {
+        if (HistoryPoints.Count==0) return;
+        HistoryCursor=Math.Clamp(index,0,HistoryPoints.Count-1);
+        var frame=await Intelligence.FrameAsync(HistoryPoints[HistoryCursor].Id);
+        if (frame is null) return;
+        ReplayMode=true; Data=frame.Operations;Actions=frame.Actions;
+        FocusPending=FocusedEngineId is not null;
+        ReplayTimestamp=frame.CapturedUtc;
+        PendingUpdates.Clear();
+        StateHasChanged();
+    }
+    private async Task StepBackAsync()
+    {
+        ReplayPlaying=false;
+        await JumpToHistoryAsync(ReplayMode ? HistoryCursor-1 : HistoryPoints.Count-2);
+    }
+    private async Task StepForwardAsync()
+    {
+        if (HistoryPoints.Count==0) return;
+        if (ReplayMode && HistoryCursor<HistoryPoints.Count-1) await JumpToHistoryAsync(HistoryCursor+1);
+        else await GoLiveAsync();
+    }
+    private async Task ToggleReplayPlaybackAsync()
+    {
+        if (!ReplayMode) await JumpToHistoryAsync(Math.Max(0,HistoryPoints.Count-8));
+        ReplayPlaying=!ReplayPlaying;
+    }
+    private async Task SaveInvestigationAsync()
+    {
+        try
+        {
+            var capture=await JS.InvokeAsync<FleetLayoutCapture>("nodalFleet.captureView");
+            var view=new FleetInvestigationView
+            {
+                Name=NewViewName,Scope=ScopeMode,WorkspaceId=SelectedWorkspaceId,
+                SelectedProcesses=MultiSelectedIds.ToList(),MultiMatch=MultiMatchMode,
+                FocusEngineId=FocusedEngineId ?? ScopeEngineId,LevelId=CurrentParentId,
+                ProcessId=SelectedNodeId ?? "",LinkFrom=SelectedLink?.FromId ?? "",LinkTo=SelectedLink?.ToId ?? "",
+                Search=Search,Family=FamilyFilter,Stage=StageFilter,Exception=ExceptionFilter,
+                TableSearch=TableSearch,TableFamily=TableFamilyFilter,TableException=TableConditionFilter,
+                Heatmap=HeatmapMetric,SliceStatus=SliceStatusFilter,TableSort=TableSort,
+                Layout=capture.Layout,ViewCenter=capture.Center,ViewScale=capture.Scale
+            };
+            await Intelligence.SaveViewAsync(view);
+            SavedViews=await Intelligence.ViewsAsync();NewViewName="";
+            Notification="Investigation saved (demo server scope; not permission-controlled).";
+            NotificationError=false;
+        }
+        catch(Exception e) { Notification=e.Message;NotificationError=true; }
+    }
+    private async Task DeleteInvestigationAsync(string id)
+    {
+        await Intelligence.DeleteViewAsync(id);
+        SavedViews=await Intelligence.ViewsAsync();
+    }
+    private async Task OpenInvestigationAsync(FleetInvestigationView view)
+    {
+        ScopeMode=view.Scope;
+        SelectedWorkspaceId=view.WorkspaceId;
+        FocusedEngineId=string.IsNullOrWhiteSpace(view.FocusEngineId)?null:view.FocusEngineId;
+        ScopeEngineId=view.FocusEngineId;
+        CurrentParentId=Map.Processes.Any(p=>p.Id==view.LevelId)?view.LevelId:"repair";
+        SelectedNodeId=string.IsNullOrEmpty(view.ProcessId)?null:view.ProcessId;
+        MultiSelectedIds=view.SelectedProcesses.Where(id=>Map.Processes.Any(p=>p.Id==id)).ToHashSet(StringComparer.Ordinal);
+        MultiMatchMode=view.MultiMatch;
+        SelectedLink=Map.Links.FirstOrDefault(l=>l.ParentId==CurrentParentId && l.FromId==view.LinkFrom && l.ToId==view.LinkTo);
+        Search=view.Search;FamilyFilter=view.Family;StageFilter=view.Stage;ExceptionFilter=view.Exception;
+        TableSearch=view.TableSearch;TableFamilyFilter=view.TableFamily;TableConditionFilter=view.TableException;
+        HeatmapMetric=view.Heatmap;SliceStatusFilter=view.SliceStatus;TableSort=view.TableSort;
+        RestoredLayout=new FleetLayoutCapture {Layout=view.Layout,
+            Center=view.ViewCenter,Scale=view.ViewScale};
+        RestoreViewPending=true;FitPending=false;GraphRevealPending=true;
+        FocusPending=false; // Preserve the investigation's captured camera position.
+        Page=1;ActivePanel="";
+        await GoLiveAsync();
+    }
+    private void ClearFilters() { Search = ""; FamilyFilter = ""; StageFilter = ""; ExceptionFilter = ""; Page = 1; }
+    private void ClearTableFilters() { TableSearch = ""; TableFamilyFilter = ""; TableConditionFilter = ""; TableSort = "exceptions"; Page = 1; }
+    private void ClearAllFilters() { ClearFilters(); ClearTableFilters(); ClearProcessFilter(); }
+    private void ClearProcessFilter() { SelectedNodeId = null; SelectedLink = null; MultiSelectedIds.Clear(); SliceStatusFilter = "all"; Page = 1; }
+    private void SetMultiMatch(string mode){MultiMatchMode=mode;Page=1;}
+    private Task JumpToTableAsync() => JS.InvokeVoidAsync("nodalFleet.revealPanel").AsTask();
+    private Task ReturnToMapAsync() => JS.InvokeVoidAsync("nodalFleet.revealGraph").AsTask();
+    private void SelectNode(string id, MouseEventArgs? e = null)
+    {
+        if (e is not null && (e.ShiftKey || e.CtrlKey || e.MetaKey))
+        {
+            if (MultiSelectedIds.Count==0 && SelectedNodeId is not null) MultiSelectedIds.Add(SelectedNodeId);
+            if (!MultiSelectedIds.Add(id)) MultiSelectedIds.Remove(id);
+            SelectedNodeId = MultiSelectedIds.FirstOrDefault() ?? id;
+        }
+        else { MultiSelectedIds.Clear();SelectedNodeId=id; }
+        SelectedLink=null;RevealPending=true;Page=1;
+        SliceStatusFilter=id==CurrentParentId?"all":"current";
+    }
+    private void SelectLink(ProcessLink link) { MultiSelectedIds.Clear();SelectedNodeId = null; SelectedLink = link; RevealPending = true; Page = 1; SliceStatusFilter = "current"; }
+    private void OnWireKey(KeyboardEventArgs e, ProcessLink link) { if (e.Key is "Enter" or " ") SelectLink(link); }
+    private Task DrillToAsync(string id)
+    {
+        if (!Map.Processes.Any(p => p.Id == id)) return Task.CompletedTask;
+        CurrentParentId = id;
+        SelectedNodeId = null; SelectedLink = null; MultiSelectedIds.Clear(); SliceStatusFilter = "all";
+        FitPending = true; FocusPending = FocusedEngine is not null; GraphRevealPending = true; Page = 1;
+        return Task.CompletedTask;
+    }
+    private Task UpAsync() => DrillToAsync(Parent.ParentId ?? "repair");
+    private Task FitAsync() => JS.InvokeVoidAsync("nodalFleet.fit").AsTask();
+    private Task ResetLayoutAsync() => JS.InvokeVoidAsync("nodalFleet.resetLayout", CurrentParentId).AsTask();
+    private void ToggleGraphFocus() { GraphFocusMode = !GraphFocusMode; FitPending = true; }
+    private void FocusEngine(string id)
+    {
+        FocusedEngineId = id;
+        ShowFocusInspector = true;
+        if (ScopeMode=="engine") ScopeEngineId=id;
+        // Deep drilldowns may not include the engine's current stage. In that
+        // case zoom back to the site map so the selection always has a marker.
+        var engine = Data.Engines.FirstOrDefault(e => e.Id == id);
+        if (engine is not null && !Children.Any(p => FleetVisitSlicer.IsCurrent(FleetAnalytics.Status(engine, p, Map))))
+        {
+            CurrentParentId = "repair";
+            FitPending = true;
+        }
+        FocusPending = true;
+    }
+    private void OnEngineRowKey(KeyboardEventArgs e, string id)
+    {
+        if (e.Key is "Enter" or " ") FocusEngine(id);
+    }
+    private async Task ClearEngineFocus()
+    {
+        FocusedEngineId = null; FocusPending = false; ShowFocusInspector=false;
+        if (ScopeMode=="engine") ScopeMode="site";
+        await JS.InvokeVoidAsync("nodalFleet.clearFocus");
+        if (string.IsNullOrEmpty(CauseFilterKind)) await JS.InvokeVoidAsync("nodalFleet.highlightCauses",Array.Empty<string>());
+    }
+    private Task ZoomAsync(double factor) => JS.InvokeVoidAsync("nodalFleet.zoom", factor).AsTask();
+    private void SetSliceFilter(string status) { SliceStatusFilter = status; Page = 1; }
+    private void PreviousPage() => Page = Math.Max(1, Page - 1);
+    private void NextPage() => Page = Math.Min(PageCount, Page + 1);
+    private void ToggleIntake() => ShowIntake = !ShowIntake;
+    private void ToggleReset() => ShowReset = !ShowReset;
+    private async Task ResetDemoAsync()
+    {
+        if (Busy) return;
+        Busy = true; AutoPlay = false; NotificationError = false;
+        try
+        {
+            await Operations.ResetDemoAsync();
+            await ProcessStore.ResetAsync();
+            await ProcessStore.EnsureDemoFleetAsync();
+            await Intelligence.ResetTimelineAsync();
+            await GoLiveAsync();
+            await RefreshNowAsync();
+            ShowReset = false; ClearAllFilters(); CurrentParentId = "repair"; FitPending = true;
+            Notification = "Synthetic operations reset and demo fleet recreated. Saved process definitions are unchanged.";
+        }
+        catch (Exception ex) { Notification = ex.Message; NotificationError = true; }
+        finally { Busy = false; }
+    }
+    private void TogglePlayAsync() { AutoPlay = !AutoPlay; Notification = AutoPlay ? "Autoplay enabled: eligible fictional visits advance every second with randomized partial progress; waits and holds remain enforced." : "Autoplay paused."; }
+    private async Task RegisterAsync()
+    {
+        if (Busy) return;
+        Busy = true; Notification = ""; NotificationError = false;
+        try
+        {
+            var id = await ProcessStore.ReceiveEngineAsync(NewFamily, NewAircraft, "");
+            await RefreshNowAsync(); ShowIntake = false;
+            await OpenEngineAsync(id);
+        }
+        catch (Exception ex) { Notification = ex.Message; NotificationError = true; }
+        finally { Busy = false; }
+    }
+    private async Task OpenEngineAsync(string id) => await OnOpenEngine.InvokeAsync(id);
+    public async ValueTask DisposeAsync()
+    {
+        if (LoopCancel is not null)
+        {
+            await LoopCancel.CancelAsync();
+            if (RefreshLoop is not null) { try { await RefreshLoop; } catch (OperationCanceledException) { } }
+            LoopCancel.Dispose();
+        }
+        if (CanvasReady)
+        {
+            try { await JS.InvokeVoidAsync("nodalFleet.dispose"); }
+            catch (JSDisconnectedException) { }
+        }
+    }
+}

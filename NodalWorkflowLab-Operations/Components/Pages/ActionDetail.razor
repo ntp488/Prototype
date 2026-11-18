@@ -1,0 +1,52 @@
+@page "/actions/{Id}"
+@inject OperationalCoordinationService Coordination
+@inject OperationsStore Actions
+<PageTitle>Action Detail · Nodal Operations</PageTitle>
+<div class="ops-app">
+    <OpsNavigation Active="work" />
+    <section class="ops-pagehead"><div><span class="ops-eyebrow">ACTION ITEMS / @Id</span><h1>Work Item <span class="ops-title-light">/ operational record</span></h1><p>Assignment, accountability, process context and source-module completion in one place.</p></div><div class="ops-head-actions"><a class="ops-button" href="/work">← My Work</a><button class="ops-button" @onclick="RefreshAsync">↻ Refresh</button></div></section>
+    @if (Item is null)
+    { <div class="ops-panel ops-empty">Action @Id was not found. <a href="/work">Return to My Work</a></div> }
+    else
+    {
+        var item = Item;
+        <section class="ops-metric-grid ops-metric-four"><div class="ops-metric"><span>STATUS</span><strong class="ops-metric-word">@item.Status</strong><small>Current action lifecycle</small></div><div class="ops-metric"><span>PRIORITY</span><strong class="ops-metric-word">@item.Priority</strong><small>Work coordination</small></div><div class="ops-metric"><span>OWNER</span><strong class="ops-metric-word">@Data.WorkspaceName(item.OwnerWorkspaceId)</strong><small>Organizational authority</small></div><div class="ops-metric"><span>RECORD</span><strong class="ops-metric-word">@(item.RequiresVerifiedCompletion ? "Module-controlled" : "General action")</strong><small>Completion contract</small></div></section>
+        <div class="ops-body-grid ops-action-layout">
+            <section class="ops-workspace-content">
+                <article class="ops-panel ops-detail-main"><span class="ops-eyebrow">@item.Id · @item.ModuleId.ToUpperInvariant()</span><h2>@item.Title</h2><p>@(string.IsNullOrWhiteSpace(item.Detail)?"No additional notes on this action.":item.Detail)</p>
+                    <div class="ops-detail-facts"><div><span>Engine / repair visit</span><strong>@item.EngineReference</strong></div><div><span>Source record</span><strong>@(item.SourceRecordId.Length==0?"General coordination":item.SourceRecordId)</strong></div><div><span>Assigned workspace</span><strong>@Data.WorkspaceName(item.AssignedWorkspaceId ?? item.OwnerWorkspaceId)</strong></div><div><span>Capability</span><strong>@(item.CapabilityId.Length==0?"Manual action":item.CapabilityId)</strong></div></div>
+                    @if (item.RequiresVerifiedCompletion)
+                    { <div class="ops-compliance"><b>Source-controlled completion</b><p>This action cannot be marked complete here. The authoritative demonstration module must produce the expected event: <code>@item.CompletionEventType</code>.</p></div><a class="ops-button ops-button-accent" href="@Data.WorkbenchUrl(item)">Open required module operation ↗</a> }
+                    else
+                    { <div class="ops-inline-actions"><label>Status <select class="nodal-select" @bind="Status"><option>Open</option><option>In Progress</option><option>Blocked</option><option>Done</option></select></label><button class="ops-button ops-button-accent" @onclick="SaveStatusAsync">Update action status</button></div> }
+                </article>
+                <article class="ops-panel"><div class="ops-panel-head"><div><span class="ops-eyebrow">RESPONSIBILITY / RACI</span><h2>People and workspaces</h2></div></div>
+                    <div class="ops-raci-list">@foreach(var r in item.Assignments){<div><b>@r.Role</b><span>@(r.PrincipalKind=="workspace"?Data.WorkspaceName(r.PrincipalId):Data.UserName(r.PrincipalId))</span><small>@r.PrincipalKind</small></div>}</div>
+                    <div class="ops-inline-actions"><select class="nodal-select" aria-label="Assignment type" value="@NewPrincipalKind" @onchange="ChangePrincipalKind"><option value="user">Person</option><option value="workspace">Workspace</option></select><select class="nodal-select" aria-label="Assignment principal" @bind="NewPrincipalId">
+                    @if(NewPrincipalKind=="user") { @foreach(var u in Data.Operations.Users){<option value="@u.Id">@u.Name</option>} }
+                    else { @foreach(var w in Data.Operations.Workspaces){<option value="@w.Id">@w.Name</option>} }
+                    </select><select class="nodal-select" aria-label="RACI role" @bind="NewRole"><option>Responsible</option><option>Accountable</option><option>Consulted</option><option>Informed</option></select><button class="ops-button" @onclick="AssignAsync">Assign</button></div>
+                </article>
+            </section>
+            <OperationalContextLens View="Data" EngineId="@item.EngineReference" ActionId="@item.Id" />
+        </div>
+    }
+    @if(Feedback.Length>0){<div class="ops-toast" role="status">@Feedback</div>}
+</div>
+@code {
+    [Parameter] public string Id {get;set;}="";
+    private OperationalView Data=new(new(),new(),ProcessMapSnapshot.Seed());
+    private string Status="Open",NewPrincipalKind="user",NewPrincipalId="u-jordan",NewRole="Responsible",Feedback="";
+    private ActionItem? Item=>Data.Action(Id);
+    protected override Task OnParametersSetAsync()=>RefreshAsync();
+    private async Task RefreshAsync(){Data=await Coordination.ReadAsync();Status=Item?.Status??"Open";if(!Data.Operations.Users.Any(u=>u.Id==NewPrincipalId) && !Data.Operations.Workspaces.Any(w=>w.Id==NewPrincipalId))NewPrincipalId=Data.Operations.Users.FirstOrDefault()?.Id??"";}
+    private async Task SaveStatusAsync(){try{await Actions.SetStatusAsync(Id,Status);Feedback="Action updated.";await RefreshAsync();}catch(Exception e){Feedback=e.Message;}}
+    private void ChangePrincipalKind(ChangeEventArgs args)
+    {
+        NewPrincipalKind=args.Value?.ToString()??"user";
+        NewPrincipalId=NewPrincipalKind=="workspace" ? Data.Operations.Workspaces.FirstOrDefault()?.Id??"" : Data.Operations.Users.FirstOrDefault()?.Id??"";
+    }
+    private async Task AssignAsync(){try{var principal=NewPrincipalId;if(NewPrincipalKind=="workspace" && !Data.Operations.Workspaces.Any(w=>w.Id==principal))principal=Data.Operations.Workspaces.FirstOrDefault()?.Id??"";
+        if(NewPrincipalKind=="user" && !Data.Operations.Users.Any(u=>u.Id==principal))principal=Data.Operations.Users.FirstOrDefault()?.Id??"";
+        await Actions.AssignAsync(Id,NewPrincipalKind,principal,NewRole);Feedback="Assignment updated.";await RefreshAsync();}catch(Exception e){Feedback=e.Message;}}
+}

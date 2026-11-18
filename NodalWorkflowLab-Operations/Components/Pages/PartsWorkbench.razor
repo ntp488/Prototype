@@ -1,0 +1,26 @@
+@page "/modules/parts"
+@inject OperationalCoordinationService Coordination
+<PageTitle>Parts Tracking · Nodal</PageTitle>
+<div class="ops-app"><OpsNavigation Active="modules" /><section class="ops-pagehead"><div><span class="ops-eyebrow">SITE MODULE / MATERIALS & BARCODE OPERATIONS</span><h1>Component Tracking <span class="ops-title-light">/ location & movement</span></h1><p>Locate synthetic serialized parts, check holds and record a simulated scan-to-location transaction.</p></div><a class="ops-button" href="/modules">← All modules</a></section>
+    <div class="ops-body-grid ops-module-layout">
+        <aside class="ops-panel ops-finding-list"><div class="ops-panel-head"><div><span class="ops-eyebrow">SERIALIZED PART REGISTRY</span><h2>Scan or find a part</h2></div></div>
+            <input class="ops-search" aria-label="Scan a part ID" placeholder="▥ Enter barcode / part identifier" @bind="Search" @bind:event="oninput" />
+            <div class="ops-finding-scroll">@foreach(var partItem in Matches.Take(100)){<button class="ops-finding-row @(PartId==partItem.Id?"is-selected":"")" @onclick="() => PartId=partItem.Id"><small>@partItem.Id · @partItem.EngineId</small><strong>@partItem.Description</strong><span class="ops-chip @(partItem.Held?"blocked":"complete")">@(partItem.Held?"ON HOLD":"Movable (demo)")</span></button>}</div>
+        </aside>
+        <section class="ops-workspace-content">
+            @if(SelectedPart is { } part)
+            {<article class="ops-panel ops-detail-main"><div class="ops-panel-head"><div><span class="ops-eyebrow">PART / @part.Id</span><h2>@part.Description</h2></div><span class="ops-chip @(part.Held?"blocked":"complete")">@(part.Held?"Hold active":"Eligible for demo movement")</span></div><div class="ops-workbench-body"><div class="ops-detail-facts"><div><span>Engine relationship</span><strong>@part.EngineId</strong></div><div><span>Module</span><strong>@part.Module</strong></div><div><span>Current location</span><strong>@part.Location</strong></div><div><span>Restriction</span><strong>@(part.Held?"Move rejected":"None in demo")</strong></div></div><div class="ops-operation-box"><span class="ops-eyebrow">PARTS CAPABILITY · parts.move</span><h3>Simulated barcode movement</h3><p>A held component must reject movement and record that attempted transaction in the engine's trace history.</p><label class="ops-select-group"><span>DESTINATION</span><select class="nodal-select" @bind="Destination"><option>WIP rack W-03</option><option>Teardown Cell T-02</option><option>Rebuild Cell R-01</option><option>Quality hold rack Q-04</option><option>Materials staging M-06</option></select></label><div class="ops-inline-actions"><button class="ops-button ops-button-accent" disabled="@Busy" @onclick="MoveAsync">▥ Confirm scanned move</button><a class="ops-button" href="@OperationalRouting.Atlas(part.EngineId)">Locate in Atlas ↗</a></div></div></div></article>}
+        </section>
+        <OperationalContextLens View="Data" EngineId="@SelectedPart?.EngineId" />
+    </div>
+    @if(Feedback.Length>0){<div class="ops-toast @(HasError?"is-error":"")">@Feedback</div>}
+</div>
+@code{
+    private OperationalView Data=new(new(),new(),ProcessMapSnapshot.Seed());
+    private string Search="",PartId="SIM-PART-FDGS-011",Destination="WIP rack W-03",Feedback="";
+    private bool Busy,HasError;
+    private List<TrackedPart> Matches=>Data.Processes.Parts.Where(p=>Search.Length==0 || (p.Id+" "+p.EngineId+" "+p.Description).Contains(Search.Trim(),StringComparison.OrdinalIgnoreCase)).ToList();
+    private TrackedPart? SelectedPart=>Data.Processes.Parts.FirstOrDefault(p=>p.Id==PartId);
+    protected override async Task OnInitializedAsync(){Data=await Coordination.ReadAsync();}
+    private async Task MoveAsync(){if(SelectedPart is not { } p||Busy)return;Busy=true;HasError=false;try{Feedback=await Coordination.MovePartAsync(p.EngineId,p.Id,Destination);Data=await Coordination.ReadAsync();}catch(Exception ex){Feedback=ex.Message;HasError=true;}finally{Busy=false;}}
+}

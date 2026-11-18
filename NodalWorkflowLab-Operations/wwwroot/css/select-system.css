@@ -1,0 +1,77 @@
+/* Nodal form selection controls — consistent across Designer, Process Atlas, and workbenches.
+   Native select is retained for screen-reader/keyboard/touch support and OS menus.
+   color-scheme:dark makes Windows/Chromium popup menus match the app's dark theme. */
+:root { color-scheme: dark; }
+.app select.nodal-select,
+.ops-app select.nodal-select {
+  box-sizing: border-box;
+  appearance: none;
+  -webkit-appearance: none;
+  color-scheme: dark;
+  background-color: #192f44;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2395dfe4' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"), linear-gradient(180deg,#213e53,#162a40);
+  background-repeat: no-repeat;
+  background-size: 15px 15px, auto;
+  background-position: right 11px center, center;
+  color: #e9f5ff;
+  border: 1px solid #56768c;
+  border-radius: 9px;
+  min-height: 37px;
+  padding: 8px 36px 8px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: 0;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: inset 0 1px 0 #e1f7ff0b, 0 2px 5px #020d1c20;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease;
+  cursor: pointer;
+}
+.app select.nodal-select:hover:not(:disabled),
+.ops-app select.nodal-select:hover:not(:disabled) {
+  border-color: #7fcbd7;
+  background-color: #26495e;
+  box-shadow: inset 0 1px 0 #e1f7ff15, 0 0 0 2px #6cdddb17;
+}
+.app select.nodal-select:focus-visible,
+.ops-app select.nodal-select:focus-visible {
+  border-color: #89e5e7;
+  outline: 2px solid #7ce7e4;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px #48cedb24;
+}
+.app select.nodal-select:disabled,
+.ops-app select.nodal-select:disabled {
+  opacity: .53;
+  cursor: not-allowed;
+  background-color: #182637;
+}
+.app select.nodal-select option,
+.app select.nodal-select optgroup,
+.ops-app select.nodal-select option,
+.ops-app select.nodal-select optgroup {
+  background-color: #192d41;
+  color: #f0f7ff;
+  font-weight: 500;
+}
+.app select.nodal-select option:checked,
+.ops-app select.nodal-select option:checked { background-color: #23677b; color: #ffffff; }
+.app select.nodal-select option:disabled,
+.ops-app select.nodal-select option:disabled { color: #879bae; }
+/* Keep short status selects dense while all regular selectors get an accessible hit area. */
+.app select.nodal-select.status-select,
+.ops-app select.nodal-select.status-select { min-height: 33px; padding-top: 5px; padding-bottom: 5px; }
+/* Align form fields containing their own labels and selectors. */
+.app .process-field select.nodal-select,
+.app .field select.nodal-select,
+.ops-app .ops-select-group select.nodal-select,
+.ops-app .ops-inline-actions select.nodal-select,
+.ops-app .ops-filterbar select.nodal-select { width: 100%; }
+/* No forced white native menu or unreadable option colors on Windows. */
+@media (prefers-reduced-motion:reduce) {
+  .app select.nodal-select, .ops-app select.nodal-select { transition: none; }
+}

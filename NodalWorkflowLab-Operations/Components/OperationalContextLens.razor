@@ -1,0 +1,48 @@
+@using NodalWorkflowLab.Models
+<aside class="ops-context" aria-label="Operational context lens">
+    <div class="ops-context-heading"><span class="ops-icon">⌖</span><div><span class="ops-eyebrow">CONTEXT LENS</span><h3>Why this work matters</h3></div></div>
+    @{ var engine = View is null || string.IsNullOrWhiteSpace(EngineId) ? null : View.Engine(EngineId); }
+    @if (engine is null || View is null)
+    {
+        <div class="ops-empty">Select an action or an engine to inspect its downstream relationships.</div>
+    }
+    else
+    {
+        var relatedActions = View.Operations.Actions.Where(a => a.EngineReference == engine.Id && a.Status != "Done").ToList();
+        var openFindings = View.Processes.Findings.Where(f => f.EngineId == engine.Id && f.Status != "Cleared (demo)").ToList();
+        var heldParts = View.Processes.Parts.Where(p => p.EngineId == engine.Id && p.Held).ToList();
+        var waiting = View.Processes.Runs.Where(x => x.EngineId == engine.Id && x.Status == "Waiting").ToList();
+        <div class="ops-context-engine">
+            <span class="ops-eyebrow">PHYSICAL ASSET / REPAIR VISIT</span>
+            <strong>@engine.Id</strong><small>@engine.Family · @engine.WorkOrder</small>
+            <a href="@OperationalRouting.Engine(engine.Id)">Open engine execution ↗</a>
+        </div>
+        <div class="ops-context-block"><span class="ops-eyebrow">CURRENT STAGE</span><strong>@View.CurrentProcessName(engine.Id)</strong><small>@engine.Cell</small></div>
+        <div class="ops-context-block"><span class="ops-eyebrow">DOWNSTREAM DEPENDENCIES</span>
+            <div class="ops-context-counts"><span><b>@heldParts.Count</b> part holds</span><span><b>@openFindings.Count</b> open findings</span><span><b>@waiting.Count</b> waiting runs</span></div>
+        </div>
+        @if (ActionId is not null && View.Action(ActionId) is { } selected)
+        {
+            <div class="ops-context-block"><span class="ops-eyebrow">SELECTED ACTION</span><strong>@selected.Id</strong><p>@selected.Title</p>
+                <small>@View.WorkspaceName(selected.AssignedWorkspaceId ?? selected.OwnerWorkspaceId) · @selected.Status</small>
+                @if (View.FindingFor(selected) is { } f)
+                { <a href="@OperationalRouting.Workbench(f.Id)">Continue in Findings workbench ↗</a> }
+            </div>
+        }
+        <div class="ops-context-block"><span class="ops-eyebrow">ACTIVE WORK · @relatedActions.Count</span>
+            @foreach (var action in relatedActions.Take(4))
+            { <a class="ops-context-link" href="@OperationalRouting.Action(action.Id)"><span>@action.Title</span><small>@action.Status ↗</small></a> }
+            @if (relatedActions.Count == 0) { <small>No open linked action items</small> }
+        </div>
+        <div class="ops-context-block"><span class="ops-eyebrow">RECENT EVENTS</span>
+            @foreach (var ev in View.Trace(engine.Id, 5))
+            { <div class="ops-trace-entry"><time>@ev.TimestampUtc.ToLocalTime().ToString("MMM d · HH:mm")</time><strong>@ev.EventType</strong><small>@ev.Detail</small></div> }
+        </div>
+        <a class="ops-button ops-button-accent ops-wide" href="@OperationalRouting.Atlas(engine.Id)">◎ Locate in Fleet Atlas</a>
+    }
+</aside>
+@code {
+    [Parameter] public OperationalView? View { get; set; }
+    [Parameter] public string? EngineId { get; set; }
+    [Parameter] public string? ActionId { get; set; }
+}

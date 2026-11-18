@@ -1,0 +1,12 @@
+@page "/modules"
+<PageTitle>Site Modules · Nodal Operations</PageTitle>
+<div class="ops-app"><OpsNavigation Active="modules" />
+    <section class="ops-pagehead"><div><span class="ops-eyebrow">SITE MODULES / CAPABILITY REGISTRY</span><h1>Operational Workbenches <span class="ops-title-light">/ do the work</span></h1><p>Purpose-built tools execute authoritative module commands. Workflows orchestrate what follows; action items manage who is responsible.</p></div><span class="ops-header-chip">DEMONSTRATION MODULES</span></section>
+    <div class="ops-module-grid">
+        <a class="ops-module-card" href="/modules/findings"><span class="ops-module-icon">⌕</span><span class="ops-eyebrow">FINDINGS · ENGINEERING · QUALITY</span><h2>Findings & Disposition</h2><p>Review synthetic findings, route engineering decisions, create independent inspection work and resume waiting workflows.</p><span class="ops-module-link">Open workbench ↗</span></a>
+        <a class="ops-module-card" href="/modules/parts"><span class="ops-module-icon">▥</span><span class="ops-eyebrow">MATERIALS · TRACEABILITY</span><h2>Component Tracking</h2><p>Search part identifiers, inspect component locations, and simulate hold-aware barcode-driven movements.</p><span class="ops-module-link">Open workbench ↗</span></a>
+        <a class="ops-module-card" href="/modules/intake"><span class="ops-module-icon">◇</span><span class="ops-eyebrow">GATE 1 · UNIVERSAL PROCESS</span><h2>Engine Intake</h2><p>Complete universal inbound steps, reconcile repair-visit context and automatically close the linked induction action.</p><span class="ops-module-link">Open workbench ↗</span></a>
+        @foreach(var item in new[]{("TEARDOWN","Physical disassembly work"),("REBUILD","Assembly process tracking"),("TEST CELLS","Test evidence and exceptions")})
+        { <div class="ops-module-card is-planned"><span class="ops-module-icon">⋯</span><span class="ops-eyebrow">PLANNED CAPABILITY</span><h2>@item.Item1</h2><p>@item.Item2 is represented in the process model. A full authoring workbench is a later integration.</p><span class="ops-muted">Process map only · Not executable here</span></div> }
+    </div>
+</div>

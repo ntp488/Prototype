@@ -1,0 +1,37 @@
+# .NET and IDE build outputs
+**/bin/
+**/obj/
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.cache
+
+# Runtime data and local state; never commit operational records
+**/App_Data/
+**/data/
+**/Data/
+**/storage/
+**/Storage/
+**/logs/
+**/Logs/
+*.db
+*.sqlite
+*.sqlite3
+
+# Credentials and local overrides
+.env
+.env.*
+!.env.example
+**/appsettings.Development.json
+**/appsettings.Local.json
+**/secrets.json
+*.pfx
+*.p12
+*.pem
+*.key
+
+# OS noise
+.DS_Store
+Thumbs.db

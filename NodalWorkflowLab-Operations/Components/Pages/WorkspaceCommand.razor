@@ -1,0 +1,80 @@
+@page "/workspaces"
+@inject OperationalCoordinationService Coordination
+@inject OperationsStore Actions
+<PageTitle>Workspace Operations · Nodal</PageTitle>
+<div class="ops-app">
+    <OpsNavigation Active="workspaces" />
+    <section class="ops-pagehead"><div><span class="ops-eyebrow">ORGANIZATION / AUTOMATIC ROLLUPS</span><h1>Workspace Intelligence <span class="ops-title-light">/ responsibilities in context</span></h1><p>Accountability, workload and downstream process impact at every level of the organization.</p></div><button class="ops-button" @onclick="RefreshAsync">↻ Refresh</button></section>
+    <div class="ops-body-grid ops-workspace-grid">
+        <aside class="ops-panel ops-workspace-tree"><div class="ops-panel-head"><div><span class="ops-eyebrow">WORKSPACE HIERARCHY</span><h2>Organization map</h2></div></div>
+            <div class="ops-tree">
+            @foreach(var w in OrderedWorkspaces())
+            {
+                var depth = Depth(w);
+                <button class="ops-tree-row @(SelectedWorkspaceId == w.Id ? "is-active" : "")" style="padding-left:@(15 + depth*18)px" @onclick="() => SelectWorkspace(w.Id)">
+                    <span>@(Data.Operations.Workspaces.Any(x => x.ParentId == w.Id) ? "◇" : "·")</span><span>@w.Name</span><small>@OperationsRollups.Summarize(Data.Operations,w.Id).Active</small>
+                </button>
+            }
+            </div>
+            <div class="ops-tree-foot"><span class="ops-eyebrow">BUILD YOUR ORGANIZATION</span><input aria-label="New child workspace" placeholder="New child workspace" @bind="NewName" /><button class="ops-button ops-wide" @onclick="CreateWorkspaceAsync">＋ Create under selection</button></div>
+        </aside>
+        <section class="ops-workspace-content">
+            <div class="ops-workspace-title"><span class="ops-eyebrow">@Current?.Code / ORGANIZATIONAL SCOPE</span><h2>@Current?.Name</h2><p>Actions owned, assigned or contributed to within this workspace and its descendants. Counts deduplicate shared actions.</p></div>
+            <section class="ops-metric-grid ops-metric-four"><div class="ops-metric"><span>ACTIVE ACTIONS</span><strong>@Summary?.Active</strong><small>@Summary?.Total total referenced</small></div><div class="ops-metric"><span>BLOCKED</span><strong>@Summary?.Blocked</strong><small>Requires intervention</small></div><div class="ops-metric"><span>IN PROGRESS</span><strong>@Summary?.InProgress</strong><small>Working queue</small></div><div class="ops-metric"><span>COMPLETION</span><strong>@(Summary?.CompletionPercent)%</strong><small>Within current rollup</small></div></section>
+            <section class="ops-panel"><div class="ops-panel-head"><div><span class="ops-eyebrow">LIVE OPERATING PICTURE</span><h2>Process impact</h2></div><a class="ops-button" href="/processes?mode=fleet">Open full Fleet Atlas ↗</a></div>
+                <div class="ops-process-mini">
+                    @foreach(var stage in StageCards)
+                    {
+                        <a class="ops-mini-node" href="/processes?mode=fleet"><span class="ops-eyebrow">@stage.Id.ToUpperInvariant()</span><strong>@stage.Label</strong><div class="ops-mini-stat"><b>@stage.Count</b><small>relevant actions</small></div><div class="ops-mini-progress"><i style="width:@(stage.Percent)%"></i></div></a>
+                    }
+                </div>
+                <div class="ops-panel-foot">Process involvement is inferred from linked action records; it is not a regulatory or release-readiness measure.</div>
+            </section>
+            <section class="ops-panel"><div class="ops-panel-head"><div><span class="ops-eyebrow">WORKSPACE RESPONSIBILITIES</span><h2>Current work · @WorkspaceActions.Count</h2></div><input class="ops-search ops-search-short" placeholder="Search this workspace..." aria-label="Search workspace actions" @bind="Search" @bind:event="oninput" /></div>
+                <div class="ops-table-wrap"><table class="ops-table"><thead><tr><th>Action</th><th>Engine / visit</th><th>Assignment</th><th>Status</th><th>Open</th></tr></thead><tbody>
+                @foreach(var a in FilteredActions.Take(100))
+                { <tr><td><strong>@a.Title</strong><small>@a.Id · @a.Priority</small></td><td>@a.EngineReference</td><td>@Data.WorkspaceName(a.AssignedWorkspaceId ?? a.OwnerWorkspaceId)</td><td><span class="ops-chip @a.Status.ToLowerInvariant().Replace(' ','-')">@a.Status</span></td><td><a class="ops-table-link" href="@OperationalRouting.Action(a.Id)">Inspect ↗</a></td></tr> }
+                @if(FilteredActions.Count==0){<tr><td colspan="5" class="ops-empty">No matching actions</td></tr>}
+                </tbody></table></div>
+            </section>
+        </section>
+    </div>
+    @if (!string.IsNullOrWhiteSpace(Feedback)) { <div class="ops-toast" role="status">@Feedback</div> }
+</div>
+@code {
+    private OperationalView Data = new(new(),new(),ProcessMapSnapshot.Seed());
+    private string SelectedWorkspaceId="cec", Search="", NewName="",Feedback="";
+    private Workspace? Current => Data.Operations.Workspaces.FirstOrDefault(w=>w.Id == SelectedWorkspaceId);
+    private WorkspaceSummary? Summary => Current is null ? null : OperationsRollups.Summarize(Data.Operations,SelectedWorkspaceId);
+    private List<ActionItem> WorkspaceActions => Current is null ? [] : OperationsRollups.ActionsFor(Data.Operations,SelectedWorkspaceId)
+        .Where(x=>x.Status != "Done").OrderBy(x=>x.Status=="Blocked"?0:1).ThenBy(x=>x.UpdatedUtc).ToList();
+    private List<ActionItem> FilteredActions => WorkspaceActions.Where(a=> Search.Length==0 || (a.Title+" "+a.Id+" "+a.EngineReference).Contains(Search.Trim(),StringComparison.OrdinalIgnoreCase)).ToList();
+    private IEnumerable<Workspace> OrderedWorkspaces()
+    {
+        var list = new List<Workspace>();
+        void Walk(string? parent,int guard)
+        { if(guard>32)return;foreach(var w in Data.Operations.Workspaces.Where(x=>x.ParentId==parent).OrderBy(x=>x.Name)) {list.Add(w); Walk(w.Id,guard+1);} }
+        Walk(null,0);return list;
+    }
+    private int Depth(Workspace w)
+    {int d=0;var parent=w.ParentId;while(parent is not null && d<25){d++;parent=Data.Operations.Workspaces.FirstOrDefault(x=>x.Id==parent)?.ParentId;}return d;}
+    private void SelectWorkspace(string id) { SelectedWorkspaceId=id; Search=""; Feedback=""; }
+    private IEnumerable<(string Id,string Label,int Count,int Percent)> StageCards
+    {
+        get
+        {
+            var actions=WorkspaceActions;
+            var ids=actions.Select(a=>a.EngineReference).Where(x=>x.Length>0).ToHashSet(StringComparer.Ordinal);
+            foreach(var stage in Data.Map.Children("repair"))
+            {
+                var engines=Data.Processes.Engines.Where(e=>ids.Contains(e.Id)).ToList();
+                var count=engines.Count(e=>e.Stages.GetValueOrDefault(stage.Id) is "In progress" or "Ready" or "Waiting" or "Blocked");
+                var percent=engines.Count==0?0:(int)Math.Round(engines.Count(e=>e.Stages.GetValueOrDefault(stage.Id)=="Complete")*100.0/engines.Count);
+                yield return (stage.Id,stage.Name,count,percent);
+            }
+        }
+    }
+    protected override Task OnInitializedAsync()=>RefreshAsync();
+    private async Task RefreshAsync(){Data=await Coordination.ReadAsync();if(Current is null)SelectedWorkspaceId="cec";}
+    private async Task CreateWorkspaceAsync(){try{var item=await Actions.CreateWorkspaceAsync(NewName,SelectedWorkspaceId);NewName="";await RefreshAsync();SelectedWorkspaceId=item.Id;Feedback="Workspace created.";}catch(Exception e){Feedback=e.Message;}}
+}

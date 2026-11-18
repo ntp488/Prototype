@@ -1,0 +1,34 @@
+@page "/modules/intake"
+@inject OperationalCoordinationService Coordination
+<PageTitle>Gate 1 Intake · Nodal</PageTitle>
+<div class="ops-app"><OpsNavigation Active="modules" /><section class="ops-pagehead"><div><span class="ops-eyebrow">UNIVERSAL PROCESS / GATE 1</span><h1>Plant Intake <span class="ops-title-light">/ all engine families</span></h1><p>Demonstrate the engine-independent entry process and its automatically completed induction work item.</p></div><a class="ops-button" href="/modules">← All modules</a></section>
+    <section class="ops-quick-create ops-visit-register"><div><span class="ops-eyebrow">NEW ENGINE / REPAIR VISIT</span><h2>Register at Gate 1</h2><p>Any fictional engine family enters the same plant-wide intake process.</p></div>
+        <input aria-label="Engine model" placeholder="Engine family" @bind="NewFamily" maxlength="65" />
+        <input aria-label="Aircraft type" placeholder="Aircraft association" @bind="NewAircraft" maxlength="80" />
+        <input aria-label="New work order" placeholder="Repair visit / work order" @bind="NewWorkOrder" maxlength="65" />
+        <button class="ops-button ops-button-accent" @onclick="RegisterAsync" disabled="@Busy">＋ Receive engine</button>
+    </section>
+    <div class="ops-body-grid ops-module-layout">
+        <aside class="ops-panel ops-finding-list"><div class="ops-panel-head"><div><span class="ops-eyebrow">REPAIR VISITS</span><h2>Engine selection</h2></div></div><input class="ops-search" aria-label="Find engine" @bind="Search" @bind:event="oninput" placeholder="⌕ Engine / work order"/><div class="ops-finding-scroll">@foreach(var engineItem in Engines.Take(100)){<button class="ops-finding-row @(EngineId==engineItem.Id?"is-selected":"")" @onclick="()=>EngineId=engineItem.Id"><small>@engineItem.Id · @engineItem.Family</small><strong>@engineItem.WorkOrder</strong><span class="ops-chip @(engineItem.Stages.GetValueOrDefault("induct")=="Complete"?"complete":"in-progress")">@engineItem.Stages.GetValueOrDefault("induct")</span></button>}</div></aside>
+        <section class="ops-workspace-content">@if(Current is { } e){<article class="ops-panel ops-detail-main"><div class="ops-panel-head"><div><span class="ops-eyebrow">GATE 1 / @e.WorkOrder</span><h2>Universal intake checklist</h2></div><span class="ops-chip @(e.Stages.GetValueOrDefault("induct")=="Complete"?"complete":"in-progress")">@e.Stages.GetValueOrDefault("induct")</span></div><div class="ops-workbench-body"><div class="ops-detail-facts"><div><span>Engine</span><strong>@e.Id</strong></div><div><span>Family</span><strong>@e.Family</strong></div><div><span>Entry gate</span><strong>Gate 1 — Plant Intake</strong></div><div><span>Action item</span><strong>@(e.IntakeActionId??"Not linked (seeded visit)")</strong></div></div>
+            <div class="ops-intake-steps">@foreach(var s in Steps){<div class="ops-intake-step"><span class="ops-step-dot @(e.Stages.GetValueOrDefault(s.Id)=="Complete"?"done":"")">@(e.Stages.GetValueOrDefault(s.Id)=="Complete"?"✓":"○")</span><div><b>@s.Name</b><small>@e.Stages.GetValueOrDefault(s.Id,"Untracked")</small></div></div>}</div>
+            <div class="ops-inline-actions"><button class="ops-button ops-button-accent" disabled="@(Busy||e.Stages.GetValueOrDefault("induct")=="Complete")" @onclick="AdvanceAsync">Complete next simulated intake step →</button>@if(e.IntakeActionId is not null){<a class="ops-button" href="@OperationalRouting.Action(e.IntakeActionId)">Linked action ↗</a>}<a class="ops-button" href="@OperationalRouting.Atlas(e.Id)">Locate in Atlas ↗</a></div></div></article>}</section>
+        <OperationalContextLens View="Data" EngineId="@EngineId" />
+    </div>@if(Feedback.Length>0){<div class="ops-toast @(HasError?"is-error":"")">@Feedback</div>}
+</div>
+@code{
+    private OperationalView Data=new(new(),new(),ProcessMapSnapshot.Seed());
+    private string EngineId="PW-DEMO-1024",Search="",Feedback="",NewFamily="PW1100G-JM",NewAircraft="Airbus A320neo family",NewWorkOrder="";private bool Busy,HasError;
+    private EngineCase? Current=>Data.Engine(EngineId);
+    private List<EngineCase> Engines=>Data.Processes.Engines.Where(e=>Search.Length==0 || (e.Id+" "+e.WorkOrder+" "+e.Family).Contains(Search.Trim(),StringComparison.OrdinalIgnoreCase)).ToList();
+    private IEnumerable<ProcessDefinition> Steps=>Data.Map.Children("induct").Where(x=>x.Id!="intake-exception");
+    protected override async Task OnInitializedAsync(){Data=await Coordination.ReadAsync();}
+    private async Task RegisterAsync()
+    {
+        if(Busy)return;Busy=true;HasError=false;
+        try{EngineId=await Coordination.ReceiveEngineAsync(NewFamily,NewAircraft,NewWorkOrder);NewWorkOrder="";
+            Data=await Coordination.ReadAsync();Feedback="New synthetic engine received into the universal Gate 1 process.";}
+        catch(Exception ex){HasError=true;Feedback=ex.Message;}finally{Busy=false;}
+    }
+    private async Task AdvanceAsync(){if(Busy)return;Busy=true;HasError=false;try{Feedback=await Coordination.AdvanceIntakeAsync(EngineId);Data=await Coordination.ReadAsync();}catch(Exception ex){HasError=true;Feedback=ex.Message;}finally{Busy=false;}}
+}

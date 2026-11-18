@@ -1,0 +1,82 @@
+@page "/modules/findings"
+@inject OperationalCoordinationService Coordination
+@inject NavigationManager Navigation
+<PageTitle>Findings Workbench · Nodal Operations</PageTitle>
+<div class="ops-app"><OpsNavigation Active="modules" />
+    <section class="ops-pagehead"><div><span class="ops-eyebrow">SITE MODULE / FINDINGS & QUALITY</span><h1>Findings Workbench <span class="ops-title-light">/ controlled workflow demo</span></h1><p>Review an in-process observation, carry out a fictional engineering decision and watch an independent inspection task arise.</p></div><div class="ops-head-actions"><label class="ops-select-group"><span>SIMULATED ROLE</span><select class="nodal-select" @bind="ActorRole"><option value="engineering">Engineering reviewer</option><option value="quality">Quality inspector</option></select></label><button class="ops-button ops-button-accent" @onclick="ToggleReport">＋ Report finding</button><button class="ops-button" @onclick="RefreshAsync">↻ Refresh</button></div></section>
+    @if(ShowReport)
+    { <section class="ops-quick-create ops-visit-register"><div><span class="ops-eyebrow">FINDINGS CAPABILITY · finding.report</span><h2>Report an in-process observation</h2><p>Creates a linked Engineering action, part hold, audit record and durable wait.</p></div>
+        <select class="nodal-select" aria-label="Affected engine" value="@NewEngineId" @onchange="ChangeNewEngine">@foreach(var e in Data.Processes.Engines){<option value="@e.Id">@e.Id · @e.Family</option>}</select>
+        <select class="nodal-select" aria-label="Affected serialized part" @bind="NewPartId">@foreach(var p in ReportParts){<option value="@p.Id">@p.Id · @p.Description</option>}</select>
+        <input aria-label="Finding observation" placeholder="Describe a fictional observation" @bind="NewDescription" maxlength="500" />
+        <button class="ops-button ops-button-accent" @onclick="SubmitFindingAsync" disabled="@(Busy || ReportParts.Count==0)">Record finding</button><button class="ops-button" @onclick="ToggleReport">Cancel</button>
+    </section> }
+    <div class="ops-body-grid ops-module-layout">
+        <aside class="ops-panel ops-finding-list"><div class="ops-panel-head"><div><span class="ops-eyebrow">IN-PROCESS FINDINGS</span><h2>Finding queue · @OpenFindings.Count</h2></div></div>
+            <input class="ops-search" aria-label="Search findings" placeholder="⌕ Find engine, part or finding..." @bind="Search" @bind:event="oninput" />
+            <div class="ops-finding-scroll">
+            @foreach(var findingItem in FilteredFindings.Take(120))
+            { <button @key="findingItem.Id" class="ops-finding-row @(SelectedFindingId == findingItem.Id ? "is-selected" : "")" @onclick="() => PickFinding(findingItem.Id)"><small>@findingItem.Id · @findingItem.EngineId</small><strong>@Shorten(findingItem.Description,88)</strong><span class="ops-chip @(findingItem.Status == "Pending disposition" ? "in-progress" : findingItem.Status == "Awaiting inspection" ? "waiting" : "blocked")">@findingItem.Status</span></button> }
+            @if(FilteredFindings.Count==0) { <div class="ops-empty">No findings match the search</div> }
+            </div>
+        </aside>
+        <section class="ops-workspace-content">
+            @if (CurrentFinding is { } finding)
+            {
+                var run = Data.Processes.Runs.FirstOrDefault(x=>x.FindingId==finding.Id);
+                var part = Data.Processes.Parts.FirstOrDefault(x=>x.Id==finding.PartId);
+                <article class="ops-panel ops-detail-main">
+                    <div class="ops-panel-head ops-workbench-header"><div><span class="ops-eyebrow">FINDING / @finding.Id</span><h2>Review &amp; disposition</h2></div><span class="ops-chip waiting">@finding.Status</span></div>
+                    <div class="ops-workbench-body"><div class="ops-detail-facts"><div><span>Engine / repair visit</span><strong>@finding.EngineId</strong></div><div><span>Serialized component</span><strong>@finding.PartId</strong></div><div><span>Current location</span><strong>@part?.Location</strong></div><div><span>Component hold</span><strong>@(part?.Held == true?"ACTIVE — movement restricted":"No active hold")</strong></div></div>
+                        <div class="ops-observation"><span class="ops-eyebrow">RECORDED OBSERVATION</span><p>@finding.Description</p><small>Fictional training observation · No dimensional, technical manual, or controlled repair data</small></div>
+                        <div class="ops-workflow-stepper"><div class="@(finding.DispositionBy is not null?"is-done":"is-current")"><b>01</b><span>Engineering decision</span></div><div class="@(finding.InspectionBy is not null?"is-done":finding.Status == "Awaiting inspection"?"is-current":"")"><b>02</b><span>Independent inspection</span></div><div class="@(finding.Status=="Cleared (demo)"?"is-done":"")"><b>03</b><span>Resume workflow</span></div></div>
+                        <div class="ops-observation ops-wait-state"><span class="ops-eyebrow">DURABLE WORKFLOW INSTANCE</span><strong>@(run?.Id??"No active execution")</strong><p>@(run is null?"No pending workflow subscription":run.Status + " · Waiting for " + run.WaitingFor)</p></div>
+                        @if (finding.Status == "Pending disposition")
+                        { <div class="ops-operation-box"><span class="ops-eyebrow">ENGINEERING CAPABILITY · engineering.disposition</span><h3>Record a synthetic engineering decision</h3><p>Acceptance routes a separate task to Quality. It never clears the part hold or signs an inspection.</p>
+                          <div class="ops-inline-actions"><button class="ops-button ops-button-accent" disabled="@(!CanEngineer)" @onclick="() => ExecuteAsync(() => Coordination.SubmitDispositionAsync(finding.Id,true))">Accept for inspection →</button><button class="ops-button" disabled="@(!CanEngineer)" @onclick="() => ExecuteAsync(() => Coordination.SubmitDispositionAsync(finding.Id,false))">Request revision</button></div></div> }
+                        else if(finding.Status=="Disposition revision requested")
+                        { <div class="ops-operation-box"><span class="ops-eyebrow">REVISION REQUESTED</span><h3>Re-submit for engineering review</h3><p>The part remains held until the separate inspection requirement is satisfied.</p><button class="ops-button ops-button-accent" disabled="@(!CanEngineer)" @onclick="() => ExecuteAsync(() => Coordination.ResubmitAsync(finding.Id))">Record revised submission</button></div> }
+                        else if(finding.Status=="Awaiting inspection")
+                        { <div class="ops-operation-box"><span class="ops-eyebrow">QUALITY CAPABILITY · inspection.record</span><h3>Simulate an independent inspection outcome</h3><p>Switch to the Quality inspector role preview to record the simulated result. This is not an electronic signature or airworthiness approval.</p>
+                          <div class="ops-inline-actions"><button class="ops-button ops-button-accent" disabled="@(!CanInspect)" @onclick="() => ExecuteAsync(() => Coordination.RecordInspectionAsync(finding.Id,true))">Record simulated acceptance</button><button class="ops-button" disabled="@(!CanInspect)" @onclick="() => ExecuteAsync(() => Coordination.RecordInspectionAsync(finding.Id,false))">Reject · return to Engineering</button></div></div> }
+                        else { <div class="ops-compliance"><b>Finding resolved in simulation</b><p>Associated workflow and actions should reflect the recorded demonstration event.</p></div> }
+                        <div class="ops-inline-actions"><a class="ops-button" href="@OperationalRouting.Action(finding.ActionId)">Engineering action ↗</a>@if(finding.InspectionActionId is not null){<a class="ops-button" href="@OperationalRouting.Action(finding.InspectionActionId)">Inspection action ↗</a>}<a class="ops-button" href="@OperationalRouting.Atlas(finding.EngineId)">Locate engine in Atlas ↗</a></div>
+                    </div>
+                </article>
+            }
+            else {<article class="ops-panel ops-empty">Select a finding to inspect its work history.</article>}
+        </section>
+        <OperationalContextLens View="Data" EngineId="@CurrentFinding?.EngineId" ActionId="@CurrentFinding?.ActionId" />
+    </div>
+    @if(Feedback.Length>0){<div class="ops-toast @(HasError?"is-error":"")" role="status">@Feedback</div>}
+</div>
+@code {
+    [SupplyParameterFromQuery(Name="finding")] public string? FindingQuery {get;set;}
+    private OperationalView Data = new(new(),new(),ProcessMapSnapshot.Seed());
+    private string SelectedFindingId="FND-SIM-001",Search="",ActorRole="engineering",Feedback="",NewEngineId="PW-DEMO-1007",NewPartId="SIM-PART-FDGS-011",NewDescription="";
+    private bool ShowReport;
+    private List<TrackedPart> ReportParts=>Data.Processes.Parts.Where(p=>p.EngineId==NewEngineId).ToList();
+    private bool Busy,HasError;
+    private bool CanEngineer=>!Busy && ActorRole=="engineering";
+    private bool CanInspect=>!Busy && ActorRole=="quality";
+    private ProcessFinding? CurrentFinding => Data.Processes.Findings.FirstOrDefault(f=>f.Id==SelectedFindingId);
+    private List<ProcessFinding> OpenFindings => Data.Processes.Findings.Where(f=>f.Status!="Cleared (demo)").OrderBy(f=>f.Id).ToList();
+    private List<ProcessFinding> FilteredFindings => OpenFindings.Where(f=>Search.Length==0||(f.Id+" "+f.EngineId+" "+f.PartId+" "+f.Description).Contains(Search.Trim(),StringComparison.OrdinalIgnoreCase)).ToList();
+    private static string Shorten(string text,int size)=>text.Length>size?text[..size]+"…":text;
+    protected override async Task OnParametersSetAsync(){await RefreshAsync();if(!string.IsNullOrWhiteSpace(FindingQuery)&&Data.Processes.Findings.Any(f=>f.Id==FindingQuery))SelectedFindingId=FindingQuery;else if(CurrentFinding is null)SelectedFindingId=OpenFindings.FirstOrDefault()?.Id??"";}
+    private async Task RefreshAsync(){Data=await Coordination.ReadAsync();}
+    private void PickFinding(string id){SelectedFindingId=id;Feedback="";}
+    private void ToggleReport(){ShowReport=!ShowReport;if(ReportParts.All(p=>p.Id!=NewPartId))NewPartId=ReportParts.FirstOrDefault()?.Id??"";}
+    private void ChangeNewEngine(ChangeEventArgs args)
+    {NewEngineId=args.Value?.ToString()??"";NewPartId=ReportParts.FirstOrDefault()?.Id??"";}
+    private async Task SubmitFindingAsync()
+    {
+        if(Busy)return;Busy=true;HasError=false;
+        try{SelectedFindingId=await Coordination.ReportFindingAsync(NewEngineId,NewPartId,NewDescription);
+            NewDescription="";ShowReport=false;Search="";ActorRole="engineering";
+            await RefreshAsync();Feedback="Finding recorded. Component held and Engineering action created.";}
+        catch(Exception ex){HasError=true;Feedback=ex.Message;}finally{Busy=false;}
+    }
+    private async Task ExecuteAsync(Func<Task<string>> command)
+    {if(Busy)return;Busy=true;Feedback="";HasError=false;try{Feedback=await command();await RefreshAsync();}catch(Exception ex){HasError=true;Feedback=ex.Message;}finally{Busy=false;}}
+}

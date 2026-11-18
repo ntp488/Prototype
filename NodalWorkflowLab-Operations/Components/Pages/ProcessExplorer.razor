@@ -1,0 +1,522 @@
+@page "/processes"
+@implements IAsyncDisposable
+@inject ProcessOperationsStore ProcessStore
+@inject ProcessMapStore MapStore
+@inject FleetIntelligenceStore Intelligence
+@inject OperationsStore Operations
+@inject IJSRuntime JS
+
+<PageTitle>Process Intelligence · Nodal Operations</PageTitle>
+
+<div class="app process-app process-v2">
+    <OpsNavigation Active="atlas" />
+
+    <div class="process-experience-bar @(Mode == "fleet" ? "is-fleet-experience" : "")">
+        <div class="experience-heading">
+            @if (Mode == "fleet")
+            {
+                <span class="eyebrow fleet-unified-eyebrow"><span class="fc-signal" aria-hidden="true"></span> OPERATIONS / PROCESS INTELLIGENCE <span class="fleet-title-divider">/</span> FLEET INTELLIGENCE <span class="fleet-title-divider">/</span> SYNTHETIC LIVE DEMO</span>
+                <strong>Every engine. Every process. <em>One map.</em></strong>
+            }
+            else
+            {
+                <span class="eyebrow">OPERATIONS / PROCESS INTELLIGENCE</span>
+                <strong>One process architecture. Three perspectives.</strong>
+            }
+        </div>
+        <div class="process-mode-tabs" role="tablist" aria-label="Process perspectives">
+            <button type="button" role="tab" aria-controls="process-pane" aria-selected="@(Mode == "design")" class="mode-tab @(Mode == "design" ? "selected" : "")" @onclick='() => SetModeAsync("design")'>
+                <span class="mode-tab-icon">◇</span><span><b>Process design</b><small>What can happen</small></span>
+            </button>
+            <button type="button" role="tab" aria-controls="process-pane" aria-selected="@(Mode == "execution")" class="mode-tab @(Mode == "execution" ? "selected" : "")" @onclick='() => SetModeAsync("execution")'>
+                <span class="mode-tab-icon">◉</span><span><b>Engine execution</b><small>What is happening</small></span>
+            </button>
+            <button type="button" role="tab" aria-controls="process-pane" aria-selected="@(Mode == "fleet")" class="mode-tab @(Mode == "fleet" ? "selected" : "")" @onclick='() => SetModeAsync("fleet")'>
+                <span class="mode-tab-icon">▦</span><span><b>Fleet overview</b><small>Across all repair visits</small></span>
+            </button>
+        </div>
+    </div>
+
+    @if (Mode == "fleet")
+    {
+        <FleetProcessDashboard State="@State" Map="@Map" InitialFocusEngineId="@InitialEngineId" OnOpenEngine="OpenEngineAsync" />
+    }
+    else
+    {
+        <main class="process-shell @(Mode == "design" ? "is-design" : "is-execution")" id="process-pane" role="tabpanel">
+            <aside class="process-sidebar" aria-label="@(Mode == "design" ? "Process library" : "Repair visits")">
+                @if (Mode == "design")
+                {
+                    <div class="process-aside-title"><div class="eyebrow">PROCESS LIBRARY</div><h2>Site process map</h2><p>Reusable definitions, independent of engine family.</p></div>
+                    <button class="process-tree-parent @(SelectedProcessId == "repair" ? "active" : "")" @onclick='() => SelectProcessAsync("repair")'><span class="process-tree-icon">◇</span> Complete repair journey <span class="process-tree-count">@Map.Children("repair").Count</span></button>
+                    <div class="process-tree-list">
+                        @foreach (var process in Map.Children("repair"))
+                        {
+                            <button class="process-tree-child @(SelectedProcessId == process.Id || Map.Get(SelectedProcessId).ParentId == process.Id ? "active" : "")" @onclick="() => SelectProcessAsync(process.Id)"><span class="process-tree-module" style="@($"background:{Color(process.ModuleId)}")"></span><span>@process.Name</span>@if (process.Id == "induct") { <span class="tree-all-badge">ALL</span> }</button>
+                        }
+                    </div>
+                    <div class="process-side-divider"></div><div class="eyebrow process-group-heading">SITE MODULES</div>
+                    @foreach (var module in ProcessCatalog.Modules)
+                    { <div class="process-module-line"><span style="@($"color:{module.Color}")">●</span><span>@module.Name</span><span class="module-count">@Map.Processes.Count(x => x.ModuleId == module.Id)</span></div> }
+                    <div class="process-aside-note"><strong>Model once, execute many times</strong><p>Gate 1 applies to every engine. Other branches can depend on findings, work scope and configuration.</p></div>
+                }
+                else
+                {
+                    <div class="process-aside-title"><div class="eyebrow">ACTIVE REPAIR VISIT</div><h2>Engine context</h2><p>Select an individual engine to overlay its recorded state on the site map.</p></div>
+                    <div class="visit-list">
+                        @foreach (var engine in State.Engines)
+                        { <button class="visit-choice @(SelectedEngineId == engine.Id ? "active" : "")" @onclick="() => PickEngineAsync(engine.Id)"><strong>@engine.Id</strong><span>@engine.Family · @engine.WorkOrder</span><small>@CurrentStage(engine)</small></button> }
+                    </div>
+                    <button class="visit-all-link" @onclick='() => SetModeAsync("fleet")'>View all repair visits →</button>
+                    <div class="process-side-divider"></div><div class="eyebrow process-group-heading">PROCESS STAGES</div>
+                    @foreach (var stage in Map.Children("repair"))
+                    { <button class="visit-stage" @onclick="() => SelectProcessAsync(stage.Id)"><span class="process-tree-module" style="@($"background:{Color(stage.ModuleId)}")"></span><span>@stage.Name</span><small class="@StatusClass(SelectedEngine?.Stages.GetValueOrDefault(stage.Id, "Not started") ?? "Not started")">●</small></button> }
+                }
+            </aside>
+            <section class="process-main">
+                <div class="process-hero">
+                    <div>
+                        <div class="process-kicker">@(Mode == "design" ? "PROCESS DEFINITION · SITE-WIDE" : "REPAIR VISIT EXECUTION · SINGLE ENGINE")</div>
+                        <h1>@(Mode == "design" ? ActiveProcess.Name : SelectedEngine?.Family + " / " + SelectedEngineId)</h1>
+                        <p>@(Mode == "design" ? ActiveProcess.Description : SelectedEngine?.Narrative)</p>
+                        <div class="scope-tags"><span class="scope-tag">@(Mode == "design" ? "◈ No engine selected" : "◉ " + SelectedEngine?.WorkOrder)</span><span class="scope-tag universal">Gate 1 · All engines</span></div>
+                    </div>
+                    @if (Mode == "execution")
+                    { <label class="process-scope"><span class="eyebrow">INDIVIDUAL ENGINE / REPAIR VISIT</span><select class="nodal-select" value="@SelectedEngineId" @onchange="EngineChangedAsync" aria-label="Choose individual engine repair visit">
+                          @foreach (var engine in State.Engines) { <option value="@engine.Id">@engine.Id · @engine.Family</option> }
+                        </select><span class="process-engine-sub">@SelectedEngine?.Cell</span></label> }
+                    else
+                    { <div class="design-universal-callout"><b>Universal entry</b><span>Gate 1 is shared across engine families. Conditional processes branch only after intake.</span></div> }
+                </div>
+                <div class="process-metrics">
+                    @if (Mode == "design")
+                    {
+                        <div class="process-metric"><div>SITE MODULES</div><strong>@ProcessCatalog.Modules.Count</strong><small>Registered capabilities</small></div>
+                        <div class="process-metric"><div>PROCESS DEFINITIONS</div><strong>@Map.Processes.Count</strong><small>Reusable process map</small></div>
+                        <div class="process-metric"><div>VISIBLE STEPS</div><strong>@VisibleProcesses.Count</strong><small>In selected process</small></div>
+                        <div class="process-metric"><div>DEPENDENCIES</div><strong>@VisibleLinks.Count</strong><small>At this level</small></div>
+                        <div class="process-metric"><div>ENTRY GATE</div><strong>01</strong><small>Family-agnostic intake</small></div>
+                    }
+                    else
+                    {
+                        <div class="process-metric"><div>GATE 1</div><strong class="metric-status">@SelectedEngine?.Stages.GetValueOrDefault("induct", "Not started")</strong><small>Universal intake</small></div>
+                        <div class="process-metric"><div>FINDINGS</div><strong>@EngineFindings.Count(f => f.Status != "Cleared (demo)")</strong><small>Open on this engine</small></div>
+                        <div class="process-metric"><div>HOLDS</div><strong>@EngineParts.Count(p => p.Held)</strong><small>Components restricted</small></div>
+                        <div class="process-metric"><div>WAITING RUNS</div><strong>@EngineRuns.Count(r => r.Status == "Waiting")</strong><small>Durable simulator</small></div>
+                        <div class="process-metric"><div>TRACE EVENTS</div><strong>@EngineEvents.Count</strong><small>For this visit</small></div>
+                    }
+                </div>
+                <div class="process-graph-header">
+                    <div class="process-crumbs"><button @onclick='() => SelectProcessAsync("repair")'>SITE MAP</button>
+                        @if (SelectedProcessId != "repair")
+                        { <span>/</span> @if (ActiveProcess.ParentId is { } parent && parent != "repair") { <button @onclick="() => SelectProcessAsync(parent)">@Map.Get(parent).Name.ToUpperInvariant()</button><span>/</span> } <strong>@ActiveProcess.Name.ToUpperInvariant()</strong> }
+                    </div>
+                    <div class="process-graph-actions"><span>Pan · Zoom · Select a step to explore</span><button class="process-iconbtn" title="Fit process map" @onclick="FitAsync">⤢ Fit</button></div>
+                </div>
+                <div class="process-viewport" id="process-viewport" aria-label="Interactive process dependency diagram">
+                    <div class="process-content" id="process-content" style="@($"width:{MapWidth}px;height:{MapHeight}px")">
+                        <svg class="process-connections" width="@MapWidth" height="@MapHeight" viewBox="@($"0 0 {MapWidth} {MapHeight}")" aria-hidden="true"><defs><marker id="process-arrow" viewBox="0 0 10 10" markerWidth="7" markerHeight="7" refX="9" refY="5" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#74849c" /></marker></defs>
+                            @foreach (var link in VisibleLinks) { <path class="process-wire" d="@WirePath(link)" /> }
+                        </svg>
+                        @foreach (var child in VisibleProcesses)
+                        {
+                            var stageStatus = ProgressFor(child.Id);
+                            <button class="process-graph-node @StatusClass(stageStatus)" @key="child.Id" style="@($"left:{child.X}px;top:{child.Y}px;--module:{Color(child.ModuleId)}")" @onclick="() => SelectProcessAsync(child.Id)">
+                                <div class="process-node-heading"><span class="process-node-glyph">@ProcessCatalog.Module(child.ModuleId).Icon</span><span class="process-node-module">@ProcessCatalog.Module(child.ModuleId).Name.ToUpperInvariant()</span><span class="process-node-expand">↗</span></div>
+                                <div class="process-node-title">@child.Name</div>
+                                <div class="process-node-foot"><span class="process-node-type">@(child.Applicability == "All engines" ? "ALL ENGINE FAMILIES" : Map.Children(child.Id).Count > 0 ? "SUBPROCESS" : "CAPABILITY")</span><span class="process-node-status">● @stageStatus</span></div>
+                            </button>
+                        }
+                        @if (VisibleProcesses.Count == 0)
+                        { <div class="process-atomic-explanation"><div class="eyebrow">PROCESS CAPABILITY</div><h2>@ActiveProcess.Name</h2><p>@ActiveProcess.Description</p><p>Use the workflow editor to define the module capability. Changes here are not an approved maintenance instruction.</p></div> }
+                    </div>
+                    <div class="process-canvas-label"><span class="process-live">●</span> @(Mode == "design" ? "POSSIBLE PROCESS MAP" : "ENGINE EXECUTION OVERLAY") <span class="process-sep">/</span> @ActiveProcess.Name.ToUpperInvariant()</div>
+                    <div class="process-canvas-controls"><button aria-label="Zoom out" @onclick="() => ZoomAsync(0.85)">−</button><button @onclick="FitAsync">Fit</button><button aria-label="Zoom in" @onclick="() => ZoomAsync(1.18)">+</button></div>
+                </div>
+                @if (Mode == "execution")
+                {
+                    <div class="process-event-panel"><div class="process-events-title"><div><div class="eyebrow">ENGINE DIGITAL THREAD</div><strong>Operational event history</strong></div><span>@EngineEvents.Count events · @SelectedEngineId</span></div>
+                        <div class="process-events-list">
+                        @foreach (var ev in EngineEvents.Take(30))
+                        { <div class="process-event" @key="ev.Id"><span class="process-event-pip" style="@($"background:{Color(ev.ModuleId)}")"></span><div class="process-event-body"><strong>@ev.EventType</strong><span>@ev.Detail</span><small>@ev.ModuleId.ToUpperInvariant() · @ev.Actor @if (!string.IsNullOrEmpty(ev.ActionId)) { <span> · ACTION @ev.ActionId</span> } @if (!string.IsNullOrEmpty(ev.RunId)) { <span> · @ev.RunId</span> }</small></div><time>@ev.TimestampUtc.ToLocalTime().ToString("MMM d, HH:mm")</time></div> }
+                        </div>
+                    </div>
+                }
+                else
+                { <div class="process-design-bottom"><div><div class="eyebrow">DESIGN INTENT</div><strong>Build a complete map, one process at a time</strong><p>Use the library to drill into subprocesses. Add reusable definitions and dependencies in the inspector, then edit their executable workflows in Node editor.</p></div><button class="btn" @onclick='() => SetModeAsync("execution")'>See an engine execution →</button></div> }
+            </section>
+            <aside class="process-inspector" aria-label="@(Mode == "design" ? "Process configuration" : "Engine execution controls")">
+                @if (Mode == "design")
+                {
+                    <div class="process-inspector-intro"><div class="eyebrow">PROCESS DEFINITION</div><h2>@ActiveProcess.Name</h2><p>@ActiveProcess.Description</p><span class="process-cell-tag">@(ActiveProcess.Applicability == "All engines" ? "◇ Universal · all families" : "◇ Conditional / configured")</span></div>
+                    @if (!string.IsNullOrEmpty(Feedback)) { <div class="process-feedback @(FeedbackIsError ? "is-error" : "")" role="status">@Feedback</div> }
+                    <div class="process-inspector-scroll">
+                        @if (!string.IsNullOrEmpty(ActiveProcess.WorkflowId))
+                        { <section class="process-inspector-section"><div class="process-section-top"><h3>Reusable workflow</h3></div><p class="process-disclaimer">This definition has a corresponding workflow graph.</p><a class="process-edit-link" href="@($"/?workflow={ActiveProcess.WorkflowId}")">↗ Open in node editor</a></section> }
+                        <section class="process-inspector-section"><div class="process-section-top"><h3>Add a subprocess</h3></div>
+                            <p class="process-disclaimer">New steps are saved in the shared map and include an editable starter workflow. They do not become an approved shop procedure.</p>
+                            <label class="process-field"><span>Step name</span><input maxlength="90" @bind="NewProcessName" placeholder="e.g. Verify intake records" /></label>
+                            <label class="process-field"><span>Owning module</span><select class="nodal-select" @bind="NewProcessModuleId">@foreach (var module in ProcessCatalog.Modules) { <option value="@module.Id">@module.Name</option> }</select></label>
+                            <label class="process-field"><span>What it does</span><textarea @bind="NewProcessDescription" rows="2" maxlength="700" placeholder="Describe the process capability"></textarea></label>
+                            <label class="process-field"><span>Applies to</span><select class="nodal-select" @bind="NewProcessApplicability"><option value="All engines">All engines</option><option value="When applicable">When conditions apply</option></select></label>
+                            <label class="process-field"><span>Depends on</span><select class="nodal-select" @bind="NewPredecessorId"><option value="">No dependency</option>@foreach (var predecessor in VisibleProcesses) { <option value="@predecessor.Id">@predecessor.Name</option> }</select></label>
+                            <button class="btn btn-primary process-action-button" @onclick="AddChildAsync" disabled="@Busy">+ Add subprocess</button>
+                        </section>
+                        @if (VisibleProcesses.Count > 1)
+                        { <section class="process-inspector-section"><div class="process-section-top"><h3>Connect existing steps</h3></div>
+                            <label class="process-field"><span>From</span><select class="nodal-select" @bind="NewLinkFromId"><option value="">Select a source</option>@foreach (var p in VisibleProcesses) { <option value="@p.Id">@p.Name</option> }</select></label>
+                            <label class="process-field"><span>To</span><select class="nodal-select" @bind="NewLinkToId"><option value="">Select a destination</option>@foreach (var p in VisibleProcesses) { <option value="@p.Id">@p.Name</option> }</select></label>
+                            <button class="btn process-action-button" @onclick="AddLinkAsync" disabled="@Busy">Connect steps →</button>
+                        </section> }
+                    </div>
+                }
+                else
+                {
+                    <div class="process-inspector-intro"><div class="eyebrow">LIVE SIMULATION</div><h2>@SelectedEngine?.WorkOrder</h2><p>@SelectedEngine?.Narrative</p><span class="process-cell-tag">⌖ @SelectedEngine?.Cell</span></div>
+                    @if (!string.IsNullOrEmpty(Feedback)) { <div class="process-feedback @(FeedbackIsError ? "is-error" : "")" role="status">@Feedback</div> }
+                    <div class="process-inspector-scroll">
+                        <section class="process-inspector-section">
+                            <div class="process-section-top"><h3>Gate 1 · Plant intake</h3><span>All engines</span></div>
+                            <p class="process-disclaimer">Universal incoming-engine sequence, independent of model. Progress is simulated, not an actual receiving inspection.</p>
+                            @foreach (var step in Map.Children("induct").Where(p => p.Id != "intake-exception"))
+                            { <div class="intake-step"><span class="@StatusClass(SelectedEngine?.Stages.GetValueOrDefault(step.Id, "Not started") ?? "Not started")">●</span><span>@step.Name</span><small>@(SelectedEngine?.Stages.GetValueOrDefault(step.Id, SelectedEngine?.Stages.GetValueOrDefault("induct") == "Complete" ? "Complete" : "Not started") ?? "Not started")</small></div> }
+                            <button class="btn btn-primary process-action-button" @onclick="AdvanceIntakeAsync" disabled="@(Busy || SelectedEngine?.Stages.GetValueOrDefault("induct") == "Complete")">Complete next simulated intake step</button>
+                            <a class="btn process-action-button process-linked-module" href="/modules/intake">Open intake workbench ↗</a>
+                        </section>
+                        <section class="process-inspector-section"><div class="process-section-top"><h3>Durable workflow instances</h3><span>@EngineRuns.Count</span></div>
+                            @if (EngineRuns.Count == 0) { <p class="process-none">No active finding executions. Report a synthetic finding to create a waiting execution.</p> }
+                            @foreach (var run in EngineRuns)
+                            { <div class="process-run"><div class="process-run-top"><strong>@run.Id</strong><span class="@StatusClass(run.Status)">@run.Status</span></div><div class="process-run-next">@run.FindingId · @run.ProcessId · v@run.Version</div><div class="process-run-next">@(run.Status == "Waiting" ? "⏳ " + run.WaitingFor : "✓ Completed")</div></div> }
+                        </section>
+                        <section class="process-inspector-section"><div class="process-section-top"><h3>Module · Findings</h3><span>@EngineFindings.Count</span></div>
+                            @if (EngineParts.Count > 0)
+                            { <label class="process-field"><span>Affected component</span><select class="nodal-select" @bind="FindingPartId">@foreach (var part in EngineParts) { <option value="@part.Id">@part.Description</option> }</select></label>
+                              <label class="process-field"><span>Observation (synthetic)</span><textarea @bind="FindingDescription" rows="2" maxlength="500" placeholder="Describe an invented finding…"></textarea></label>
+                              <button class="btn btn-primary process-action-button" @onclick="ReportFindingAsync" disabled="@Busy">+ Report demo finding</button> }
+                            else { <p class="process-none">No components registered for this synthetic engine yet. The simulated intake starts with engine identity only.</p> }
+                            @if (EngineFindings.Count > 0)
+                            { <label class="process-field"><span>Finding / waiting gate</span><select class="nodal-select" @bind="SelectedFindingId">@foreach (var finding in EngineFindings) { <option value="@finding.Id">@finding.Id · @finding.Status</option> }</select></label>
+                              @if (SelectedFinding is { } findingDetail)
+                              { <p class="process-finding-caption">Action item <b>@findingDetail.ActionId</b> · @findingDetail.Status</p>
+                                <a class="btn process-action-button process-linked-module" href="@OperationalRouting.Workbench(findingDetail.Id)">↗ Open Findings workbench</a>
+                                <a class="btn process-action-button process-linked-module" href="@OperationalRouting.Action(findingDetail.ActionId)">↗ View action &amp; RACI</a>
+                                @if (findingDetail.Status == "Pending disposition")
+                                { <div class="process-button-pair"><button class="btn" @onclick="() => DispositionAsync(true)" disabled="@Busy">Accept disposition*</button><button class="btn" @onclick="() => DispositionAsync(false)" disabled="@Busy">Request revision*</button></div> }
+                                @if (findingDetail.Status == "Disposition revision requested")
+                                { <button class="btn process-action-button" @onclick="ResubmitAsync" disabled="@Busy">↻ Resubmit disposition*</button> }
+                                @if (findingDetail.Status == "Awaiting inspection")
+                                { <div class="process-button-pair"><button class="btn" @onclick="() => InspectionAsync(true)" disabled="@Busy">Record demo acceptance*</button><button class="btn" @onclick="() => InspectionAsync(false)" disabled="@Busy">Record rejection*</button></div> }
+                              } }
+                            <p class="process-disclaimer">*Simulated decisions only. These controls do not produce a regulatory inspection signature or authorize return to service.</p>
+                        </section>
+                        <section class="process-inspector-section"><div class="process-section-top"><h3>Module · Barcode tracking</h3><span>@EngineParts.Count parts</span></div>
+                            @foreach (var part in EngineParts) { <div class="process-part-row"><strong>@part.Module</strong><span title="@part.Location">@part.Location</span><em class="@(part.Held ? "held" : "clear")">@(part.Held ? "HOLD" : "CLEAR")</em></div> }
+                            @if (EngineParts.Count > 0)
+                            { <label class="process-field"><span>Component to scan</span><select class="nodal-select" @bind="MovingPartId">@foreach (var part in EngineParts) { <option value="@part.Id">@part.Id</option> }</select></label>
+                              <label class="process-field"><span>Destination</span><select class="nodal-select" @bind="MoveDestination"><option>WIP Rack W-03</option><option>Teardown Cell T-02</option><option>Rebuild Cell R-01</option><option>Quarantine Rack Q-04</option><option>Inspection Station Q-02</option></select></label>
+                              <button class="btn process-action-button" @onclick="MovePartAsync" disabled="@Busy">▥ Scan simulated movement</button>
+                              <a class="btn process-action-button process-linked-module" href="/modules/parts">Open component workbench ↗</a> }
+                        </section>
+                        <section class="process-inspector-section"><div class="process-section-top"><h3>Rebuild & testing</h3></div>
+                            <button class="btn process-action-button" @onclick="RebuildAsync" disabled="@Busy">↻ Advance simulated rebuild</button>
+                            <div class="process-button-pair"><button class="btn" @onclick="() => TestAsync(true)" disabled="@Busy">Record test pass*</button><button class="btn" @onclick="() => TestAsync(false)" disabled="@Busy">Record test fail*</button></div><p class="process-disclaimer">All results are synthetic; no airworthiness approval is performed.</p>
+                        </section>
+                    </div>
+                }
+            </aside>
+        </main>
+    }
+</div>
+
+@code {
+    [SupplyParameterFromQuery(Name="mode")] public string? InitialMode {get;set;}
+    [SupplyParameterFromQuery(Name="engine")] public string? InitialEngineId {get;set;}
+    private string Mode = "design";
+    private string FleetSearch = "";
+    private string FleetFamilyFilter = "";
+    private string FleetStatusFilter = "";
+    private string NewEngineFamily = "PW1100G-JM";
+    private string NewEngineAircraft = "Airbus A320neo family";
+    private string NewEngineOrder = "";
+    private bool ShowIntakeForm;
+    private bool ShowResetConfirm;
+    private ProcessSnapshot State = new();
+    private ProcessMapSnapshot Map = ProcessMapSnapshot.Seed();
+    private string SelectedProcessId = "repair";
+    private string SelectedEngineId = "PW-DEMO-1007";
+    private string SelectedFindingId = "FND-SIM-001";
+    private string FindingPartId = "SIM-PART-FDGS-011";
+    private string MovingPartId = "SIM-PART-FDGS-011";
+    private string FindingDescription = "Illustrative inspection observation requiring engineering assessment";
+    private string MoveDestination = "WIP Rack W-03";
+    private string NewProcessName = "";
+    private string NewProcessDescription = "";
+    private string NewProcessModuleId = "findings";
+    private string NewProcessApplicability = "When applicable";
+    private string NewPredecessorId = "";
+    private string NewLinkFromId = "";
+    private string NewLinkToId = "";
+    private string Feedback = "";
+    private bool FeedbackIsError;
+    private bool Busy;
+    private bool _mapInitialized;
+    private bool _fitOnRender;
+    private ProcessDefinition ActiveProcess => Map.Get(SelectedProcessId);
+    private int MapWidth => Math.Max(900, VisibleProcesses.Count == 0 ? 900 : VisibleProcesses.Max(p => p.X + 320));
+    private int MapHeight => Math.Max(570, VisibleProcesses.Count == 0 ? 570 : VisibleProcesses.Max(p => p.Y + 190));
+    private EngineCase? SelectedEngine => State.Engines.FirstOrDefault(e => e.Id == SelectedEngineId);
+    private List<ProcessDefinition> VisibleProcesses => Map.Children(SelectedProcessId).ToList();
+    private List<ProcessLink> VisibleLinks => Map.Links.Where(e => e.ParentId == SelectedProcessId).ToList();
+    private List<TrackedPart> EngineParts => State.Parts.Where(p => p.EngineId == SelectedEngineId).ToList();
+    private List<ProcessFinding> EngineFindings => State.Findings.Where(f => f.EngineId == SelectedEngineId).OrderByDescending(f => f.Id).ToList();
+    private List<ProcessRun> EngineRuns => State.Runs.Where(r => r.EngineId == SelectedEngineId).OrderByDescending(r => r.StartedUtc).ToList();
+    private List<ProcessAuditEvent> EngineEvents => State.Events.Where(e => e.EngineId == SelectedEngineId).OrderByDescending(e => e.TimestampUtc).ToList();
+    private List<EngineCase> FilteredEngines => State.Engines.Where(e =>
+        (string.IsNullOrWhiteSpace(FleetSearch) || (e.Id + " " + e.Family + " " + e.WorkOrder + " " + e.Cell)
+            .Contains(FleetSearch.Trim(), StringComparison.OrdinalIgnoreCase)) &&
+        (FleetFamilyFilter.Length == 0 || e.Family == FleetFamilyFilter) &&
+        (FleetStatusFilter.Length == 0 || (FleetStatusFilter switch
+        {
+            "intake" => e.Stages.GetValueOrDefault("induct", "Not started") != "Complete",
+            "waiting" => State.Runs.Any(r => r.EngineId == e.Id && r.Status == "Waiting")
+                 || State.Parts.Any(p => p.EngineId == e.Id && p.Held)
+                 || e.Stages.Values.Any(v => v == "Blocked"),
+            "active" => e.Stages.GetValueOrDefault("induct") == "Complete" &&
+                 e.Stages.GetValueOrDefault("release") != "Complete",
+            _ => true
+        }))).OrderBy(e => e.Id).ToList();
+    private string CurrentStage(EngineCase e)
+    {
+        if (e.Stages.GetValueOrDefault("induct") != "Complete") return "Gate 1 · Plant intake";
+        if (State.Runs.Any(r => r.EngineId == e.Id && r.Status == "Waiting" && r.WaitingFor.StartsWith("quality"))) return "Quality inspection gate";
+        if (State.Runs.Any(r => r.EngineId == e.Id && r.Status == "Waiting")) return "Engineering disposition";
+        if (e.Stages.GetValueOrDefault("test") is "In progress" or "Ready") return "Engine testing";
+        if (e.Stages.GetValueOrDefault("rebuild") is "In progress" or "Ready") return "Rebuild";
+        if (e.Stages.GetValueOrDefault("teardown") is "In progress" or "Ready") return "Teardown";
+        if (e.Stages.GetValueOrDefault("release") == "Complete") return "Visit complete";
+        return "Planning / awaiting routing";
+    }
+    private ProcessFinding? SelectedFinding => State.Findings.FirstOrDefault(f => f.Id == SelectedFindingId && f.EngineId == SelectedEngineId);
+    private static string Color(string module) => ProcessCatalog.Modules.FirstOrDefault(m => m.Id == module)?.Color ?? "#93a2b8";
+    private string ProgressFor(string processId)
+    {
+        if (Mode == "design")
+        {
+            var def = Map.Get(processId);
+            return def.Applicability == "All engines" ? "Universal" : "Defined";
+        }
+        if (processId.StartsWith("intake-", StringComparison.Ordinal))
+        {
+            var intake = SelectedEngine?.Stages.GetValueOrDefault("induct", "Not started") ?? "Not started";
+            if (processId == "intake-exception") return "Optional";
+            return SelectedEngine?.Stages.GetValueOrDefault(processId, intake == "Complete" ? "Complete" : "Not started") ?? "Not started";
+        }
+        var top = processId switch
+        {
+            "finding-capture" or "finding-hold" or "finding-assign" or "finding-wait" or "finding-inspect" or "finding-clear" => "findings",
+            "part-identify" or "part-check" or "part-move" or "part-publish" => "materials",
+            "inspect-request" or "inspect-wait" or "inspect-evidence" or "inspect-complete" => "quality",
+            _ => processId
+        };
+        var status = SelectedEngine?.Stages.GetValueOrDefault(top, "Not started") ?? "Not started";
+        if (processId == "finding-capture" && EngineFindings.Count > 0) return "Complete";
+        if (processId == "finding-hold" && EngineParts.Any(p => p.Held)) return "Active hold";
+        if (processId == "finding-wait" && EngineRuns.Any(r => r.WaitingFor.StartsWith("engineering"))) return "Waiting";
+        if (processId == "finding-inspect" && EngineRuns.Any(r => r.WaitingFor.StartsWith("quality"))) return "Waiting";
+        return status;
+    }
+    private static string StatusClass(string status) => status.ToLowerInvariant() switch
+    {
+        "complete" or "completed" or "cleared (demo)" => "state-complete",
+        "blocked" or "active hold" => "state-blocked",
+        "waiting" or "review required" => "state-waiting",
+        "ready" or "in progress" => "state-active",
+        "universal" => "state-universal",
+        "defined" or "optional" => "state-defined",
+        _ => "state-idle"
+    };
+    private string WirePath(ProcessLink link)
+    {
+        var from = Map.Get(link.FromId);
+        var to = Map.Get(link.ToId);
+        var x1 = from.X + 248; var y1 = from.Y + 60;
+        var x2 = to.X; var y2 = to.Y + 60;
+        var bend = Math.Max(70, Math.Abs(x2 - x1) * 0.52);
+        return $"M{x1},{y1} C{x1+bend},{y1} {x2-bend},{y2} {x2},{y2}";
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ProcessStore.EnsureDemoFleetAsync();
+        State = await ProcessStore.SnapshotAsync();
+        Map = await MapStore.SnapshotAsync();
+        SyncSelections();
+        if (!string.IsNullOrWhiteSpace(InitialEngineId) && State.Engines.Any(e=>e.Id==InitialEngineId)) SelectedEngineId=InitialEngineId;
+        if (InitialMode is "fleet" or "execution" or "design") Mode = InitialMode;
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (Mode == "fleet") return;
+        if (!_mapInitialized)
+        {
+            await JS.InvokeVoidAsync("nodalProcess.init", "process-viewport", "process-content");
+            _mapInitialized = true;
+            _fitOnRender = false;
+        }
+        else if (_fitOnRender)
+        {
+            _fitOnRender = false;
+            await JS.InvokeVoidAsync("nodalProcess.fit");
+        }
+    }
+    private void SyncSelections()
+    {
+        if (!State.Engines.Any(e => e.Id == SelectedEngineId))
+            SelectedEngineId = State.Engines.FirstOrDefault()?.Id ?? "";
+        if (!EngineParts.Any(p => p.Id == FindingPartId)) FindingPartId = EngineParts.FirstOrDefault()?.Id ?? "";
+        if (!EngineParts.Any(p => p.Id == MovingPartId)) MovingPartId = EngineParts.FirstOrDefault()?.Id ?? "";
+        if (!EngineFindings.Any(f => f.Id == SelectedFindingId)) SelectedFindingId = EngineFindings.FirstOrDefault()?.Id ?? "";
+    }
+    private async Task RefreshAsync()
+    {
+        State = await ProcessStore.SnapshotAsync();
+        SyncSelections();
+    }
+    private Task SelectProcessAsync(string id)
+    {
+        SelectedProcessId = id;
+        NewPredecessorId = "";
+        NewProcessApplicability = id != "repair" && ActiveProcess.Applicability == "All engines"
+            ? "All engines" : "When applicable";
+        NewLinkFromId = "";
+        NewLinkToId = "";
+        _fitOnRender = true;
+        return Task.CompletedTask;
+    }
+    private Task EngineChangedAsync(ChangeEventArgs e) => PickEngineAsync(e.Value?.ToString() ?? "");
+    private Task PickEngineAsync(string id)
+    {
+        SelectedEngineId = id;
+        SyncSelections();
+        Feedback = "";
+        return Task.CompletedTask;
+    }
+    private async Task SetModeAsync(string mode)
+    {
+        if (mode != "design" && mode != "execution" && mode != "fleet") return;
+        if (Mode == mode) return;
+        if (_mapInitialized)
+        {
+            try { await JS.InvokeVoidAsync("nodalProcess.dispose"); }
+            catch (JSDisconnectedException) { }
+            _mapInitialized = false;
+        }
+        Mode = mode;
+        SelectedProcessId = "repair";
+        _fitOnRender = true;
+        Feedback = "";
+    }
+    private async Task OpenEngineAsync(string id)
+    {
+        SelectedEngineId = id;
+        await RefreshAsync();
+        SyncSelections();
+        await SetModeAsync("execution");
+    }
+    private void ClearFleetFilters()
+    {
+        FleetSearch = "";
+        FleetFamilyFilter = "";
+        FleetStatusFilter = "";
+    }
+    private void ToggleIntakeForm() => ShowIntakeForm = !ShowIntakeForm;
+    private void ToggleResetConfirm() => ShowResetConfirm = !ShowResetConfirm;
+    private async Task RegisterEngineAsync()
+    {
+        if (Busy) return;
+        Busy = true;
+        Feedback = "";
+        FeedbackIsError = false;
+        try
+        {
+            var id = await ProcessStore.ReceiveEngineAsync(NewEngineFamily, NewEngineAircraft, NewEngineOrder);
+            await RefreshAsync();
+            SelectedEngineId = id;
+            SyncSelections();
+            ShowIntakeForm = false;
+            NewEngineOrder = "";
+            await SetModeAsync("execution");
+            Feedback = id + " received. Universal Gate 1 has started; continue using the intake controls.";
+        }
+        catch (Exception ex) { Feedback = ex.Message; FeedbackIsError = true; }
+        finally { Busy = false; }
+    }
+    private Task AdvanceIntakeAsync() => ExecuteAsync(() => ProcessStore.AdvanceIntakeAsync(SelectedEngineId));
+    private async Task FitAsync() => await JS.InvokeVoidAsync("nodalProcess.fit");
+    private async Task ZoomAsync(double factor) => await JS.InvokeVoidAsync("nodalProcess.zoom", factor);
+    private async Task ExecuteAsync(Func<Task<string>> action)
+    {
+        if (Busy) return;
+        Busy = true;
+        Feedback = "";
+        FeedbackIsError = false;
+        try { Feedback = await action(); await RefreshAsync(); }
+        catch (Exception ex) { Feedback = ex.Message; FeedbackIsError = true; }
+        finally { Busy = false; }
+    }
+    private Task ReportFindingAsync() => ExecuteAsync(async () =>
+    {
+        var id = await ProcessStore.ReportFindingAsync(SelectedEngineId, FindingPartId, FindingDescription);
+        SelectedFindingId = id;
+        return $"{id} created. Component held; workflow persisted waiting for engineering.";
+    });
+    private Task MovePartAsync() => ExecuteAsync(() => ProcessStore.MovePartAsync(SelectedEngineId, MovingPartId, MoveDestination));
+    private Task DispositionAsync(bool accepted) => ExecuteAsync(() => ProcessStore.RecordDispositionAsync(SelectedFindingId, accepted));
+    private Task InspectionAsync(bool accepted) => ExecuteAsync(() => ProcessStore.RecordInspectionAsync(SelectedFindingId, accepted));
+    private Task ResubmitAsync() => ExecuteAsync(() => ProcessStore.ResubmitDispositionAsync(SelectedFindingId));
+    private Task RebuildAsync() => ExecuteAsync(() => ProcessStore.AdvanceRebuildAsync(SelectedEngineId));
+    private Task TestAsync(bool pass) => ExecuteAsync(() => ProcessStore.RecordTestAsync(SelectedEngineId, pass));
+    private Task AddChildAsync() => ExecuteAsync(async () =>
+    {
+        var added = await MapStore.AddChildAsync(SelectedProcessId, NewProcessModuleId,
+            NewProcessName, NewProcessDescription, NewPredecessorId, NewProcessApplicability);
+        Map = await MapStore.SnapshotAsync();
+        NewProcessName = "";
+        NewProcessDescription = "";
+        NewPredecessorId = "";
+        _fitOnRender = true;
+        return $"Added {added.Name}. Its starter node graph is saved as {added.WorkflowId}.";
+    });
+    private Task AddLinkAsync() => ExecuteAsync(async () =>
+    {
+        await MapStore.AddLinkAsync(SelectedProcessId, NewLinkFromId, NewLinkToId);
+        Map = await MapStore.SnapshotAsync();
+        NewLinkFromId = "";
+        NewLinkToId = "";
+        _fitOnRender = true;
+        return "Process dependency saved to the process-map library.";
+    });
+    private async Task ResetAsync()
+    {
+        await ExecuteAsync(async () =>
+        {
+            await Operations.ResetDemoAsync();
+            await ProcessStore.ResetAsync();
+            await ProcessStore.EnsureDemoFleetAsync();
+            await Intelligence.ResetTimelineAsync();
+            SelectedEngineId = "PW-DEMO-1007";
+            SelectedFindingId = "FND-SIM-001";
+            ShowResetConfirm = false;
+            ClearFleetFilters();
+            return "Synthetic scenarios and action-item demo data reset. Process definitions and workflows were preserved.";
+        });
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (_mapInitialized)
+        {
+            try { await JS.InvokeVoidAsync("nodalProcess.dispose"); }
+            catch (JSDisconnectedException) { }
+        }
+    }
+}

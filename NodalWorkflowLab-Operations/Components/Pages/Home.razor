@@ -1,0 +1,503 @@
+@page "/"
+@implements IAsyncDisposable
+
+<div class="app @(ConsoleCollapsed ? "console-hidden" : "") @(SidebarOpen ? "sidebar-open" : "") @(InspectorOpen ? "inspector-open" : "")" id="app">
+    <header class="topbar">
+        <div class="brand">
+            <div class="logo">◇</div>
+            <div>
+                <div class="brand-name">NODAL <span style="font-size:10px;color:#8e9ab3;font-weight:600">/ OPERATIONS</span></div>
+                <div class="brand-sub">Aftermarket Workflow Prototype</div>
+            </div>
+        </div>
+        <div class="top-divider"></div>
+        <OpsNavigation LinksOnly="true" Active="editor" />
+        <span class="status-pill"><span class="status-dot"></span>@(IsRunning ? "Executing" : "Server connected")</span>
+        <div class="grow"></div>
+        <div class="toolbar-actions">
+            <button class="btn btn-ghost toolbar-mobile" @onclick="ToggleSidebar" title="Toggle node library">＋ Nodes</button>
+            <button class="btn btn-ghost toolbar-mobile" @onclick="ToggleInspector" title="Toggle inspector">⚙</button>
+            @if (View == "editor")
+            {
+                <button class="btn btn-ghost hide-small" @onclick="() => SaveCurrentAsync(true)" disabled="@IsRunning">⇩ Save</button>
+            }
+            <button class="btn btn-ghost hide-small" @onclick="OpenImportAsync" disabled="@IsRunning" title="Import a workflow">↥ Import</button>
+            <button class="btn btn-ghost" @onclick="ExportAsync" title="Export current workflow">↧ <span class="hide-small">Export</span></button>
+            @if (IsRunning)
+            {
+                <button class="btn btn-danger" @onclick="CancelRun" title="Cancel current execution">■ Stop</button>
+            }
+            else if (View == "editor")
+            {
+                <button class="btn btn-primary" @onclick="RunDefaultAsync" title="Run workflow (Ctrl+Enter)">▶ <span>Run workflow</span></button>
+            }
+        </div>
+    </header>
+
+    <main class="main" style="display:@(View == "editor" ? "grid" : "none")">
+        <aside class="sidebar">
+            <div class="workflow-browser">
+                <div class="workflow-browser-head">
+                    <div><div class="eyebrow">Automation library</div><h3>Workflows <span class="count-chip">@Workflows.Count</span></h3></div>
+                    <button class="small-square" type="button" @onclick="NewWorkflowAsync" disabled="@IsRunning" title="New workflow">＋</button>
+                </div>
+                @foreach (var doc in Workflows)
+                {
+                    <button @key="doc.Id" type="button" class="workflow-row @(Current.Id == doc.Id ? "current" : "")"
+                            @onclick="() => SelectWorkflowAsync(doc.Id)" disabled="@IsRunning">
+                        <span class="workflow-indicator @(doc.Enabled ? "enabled" : "")"></span>
+                        <span class="workflow-row-text"><b>@doc.Name</b><small>@(doc.Enabled ? "Automatic events enabled" : "Manual / inactive")</small></span>
+                    </button>
+                }
+                <div class="workflow-actions">
+                    <button class="mini-action" @onclick="DuplicateWorkflowAsync" disabled="@IsRunning">⧉ Duplicate</button>
+                    <button class="mini-action danger" @onclick="DeleteWorkflowAsync" disabled="@IsRunning">⌫ Delete</button>
+                </div>
+            </div>
+            <div class="side-header">
+                <div class="eyebrow">Components</div>
+                <h2>Node library</h2>
+                <div class="small muted">Click a node to add it to the canvas.</div>
+            </div>
+            <div class="searchwrap">
+                <input class="search" aria-label="Search nodes" placeholder="Search nodes..." @bind="Search" @bind:event="oninput" />
+            </div>
+            <div id="library">
+                @foreach (var category in Categories)
+                {
+                    var matching = NodeCatalog.Types.Values.Where(def => def.Category == category &&
+                        ($"{def.Title} {def.Description}").Contains(Search ?? "", StringComparison.OrdinalIgnoreCase)).ToList();
+                    if (matching.Count > 0)
+                    {
+                        <div class="group-heading">@category</div>
+                        @foreach (var definition in matching)
+                        {
+                            <button class="library-item" @key="definition.Id" @onclick="() => AddNodeAsync(definition.Id)" disabled="@IsRunning">
+                                <div class="lib-icon" style="--node-color:@definition.Color">@definition.Icon</div>
+                                <div>
+                                    <div class="lib-name">@definition.Title</div>
+                                    <div class="lib-desc">@definition.Description</div>
+                                </div>
+                                <span class="library-plus">＋</span>
+                            </button>
+                        }
+                    }
+                }
+            </div>
+            <div class="help-card">
+                <strong>↗ Build your own logic</strong>
+                <p>Drag an output socket to an input. Select a node to configure it, or use its ▶ button to test execution from that point.</p>
+            </div>
+        </aside>
+
+        <section class="workspace" aria-label="Node workflow workspace">
+            <div class="graph-viewport" id="viewport" data-running="@(IsRunning ? "true" : "false")" aria-label="Interactive graph canvas">
+                <div class="graph-world" id="world">
+                    <svg id="wires" class="wires" aria-label="Workflow connections"></svg>
+                    <div id="nodes">
+                        @foreach (var node in Graph.Nodes)
+                        {
+                            var definition = NodeCatalog.Types[node.Type];
+                            <div @key="node.Id" class="node @(SelectedNodeId == node.Id ? "selected" : "") @StatusOf(node.Id)"
+                                 data-node-id="@node.Id" style="left:@(node.X.ToString(System.Globalization.CultureInfo.InvariantCulture))px;top:@(node.Y.ToString(System.Globalization.CultureInfo.InvariantCulture))px;--node-color:@definition.Color">
+                                <div class="node-head">
+                                    <div class="node-icon">@definition.Icon</div>
+                                    <div style="min-width:0;flex:1">
+                                        <div class="node-title">@definition.Title</div>
+                                        <div class="node-subtitle">@definition.Category / @node.Type</div>
+                                    </div>
+                                    <button class="node-fire" title="Run from this node using test payload" aria-label="Run from @definition.Title"
+                                            disabled="@IsRunning" @onclick="() => RunSelectedAsync(node.Id)" @onclick:stopPropagation="true">▶</button>
+                                </div>
+                                <div class="node-body">
+                                    <div class="node-description">@definition.Description</div>
+                                    <div class="ports-layout">
+                                        <div class="ports-column in">
+                                            @foreach (var port in definition.Inputs)
+                                            {
+                                                <div class="port-row" @key="port.Id">
+                                                    <button class="port" type="button" title="Input: @port.Id" aria-label="Connect input @port.Id"
+                                                            data-node-id="@node.Id" data-port-id="@port.Id" data-direction="in"
+                                                            style="--port-color:@port.Color"></button>
+                                                    <span class="port-text">@port.Label</span>
+                                                </div>
+                                            }
+                                        </div>
+                                        <div class="ports-column out">
+                                            @foreach (var port in definition.Outputs)
+                                            {
+                                                <div class="port-row" @key="port.Id">
+                                                    <span class="port-text">@port.Label</span>
+                                                    <button class="port" type="button" title="Output: @port.Id" aria-label="Connect output @port.Id"
+                                                            data-node-id="@node.Id" data-port-id="@port.Id" data-direction="out"
+                                                            style="--port-color:@port.Color"></button>
+                                                </div>
+                                            }
+                                        </div>
+                                    </div>
+                                    <div class="node-preview" title="@NodeCatalog.Preview(node)"><b>@Trim(NodeCatalog.Preview(node), 75)</b></div>
+                                    @if (LastPayload.TryGetValue(node.Id, out var previous))
+                                    {
+                                        <div class="node-last run-value">Last: @Trim(previous, 48)</div>
+                                    }
+                                    else
+                                    {
+                                        <div class="node-last">Awaiting event…</div>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="canvas-header">
+                    <div class="canvas-kicker">Visual execution graph</div>
+                    <div class="canvas-title">@Current.Name</div>
+                    <div class="canvas-hint">Saved server-side · @Current.Graph.Nodes.Count nodes · @Current.Graph.Edges.Count connections</div>
+                </div>
+                <div class="canvas-help">
+                    Drag empty space to pan · Scroll to zoom · <span class="kbd">F</span> fit · <span class="kbd">Del</span> delete
+                </div>
+                <div class="viewport-controls">
+                    <button class="mini-btn" type="button" @onclick="() => ZoomAsync(0.8333)" title="Zoom out">−</button>
+                    <div class="zoom-indicator" id="zoom-label">100%</div>
+                    <button class="mini-btn" type="button" @onclick="() => ZoomAsync(1.2)" title="Zoom in">+</button>
+                    <button class="mini-btn" type="button" @onclick="FitAsync" title="Fit all nodes">⤢</button>
+                </div>
+                <div class="toast" id="toast" role="status" aria-live="polite"></div>
+            </div>
+
+            <div class="console">
+                <div class="console-header">
+                    <span style="color:#af9aff">▤</span>
+                    <span class="console-title">Server event console</span>
+                    <span class="console-count">@EventLog.Count event@(EventLog.Count == 1 ? "" : "s")</span>
+                    <div class="console-actions">
+                        <button class="icon-button" @onclick="ClearLog" title="Clear log">Clear</button>
+                        <button class="icon-button" @onclick="ToggleConsole" title="Collapse / expand console">@(ConsoleCollapsed ? "⌃" : "⌄")</button>
+                    </div>
+                </div>
+                <div class="console-stream" id="console-stream">
+                    @if (EventLog.Count == 0)
+                    {
+                        <div class="console-empty">Run a graph, or change an action item status to fire enabled automation.</div>
+                    }
+                    @foreach (var evt in EventLog)
+                    {
+                        <div class="log-entry" @key="evt.Sequence">
+                            <span class="log-time">@evt.Time</span>
+                            <span class="log-tag @LogColor(evt.Type)">@evt.Type</span>
+                            <span class="log-detail">@evt.Text</span>
+                        </div>
+                    }
+                </div>
+            </div>
+        </section>
+
+        <aside class="inspector">
+            <div class="side-header">
+                <div class="eyebrow">Properties</div>
+                <h2>Inspector</h2>
+                <div class="small muted">Edit, test and observe selected nodes.</div>
+            </div>
+            <div class="inspect-content">
+                <div class="section-label" style="margin-top:0">Active workflow</div>
+                <label class="field"><span>Name</span><input type="text" value="@Current.Name" maxlength="100" disabled="@IsRunning" @onchange="RenameWorkflowAsync" /></label>
+                <label class="field"><span>Description</span><textarea rows="2" disabled="@IsRunning" @onchange="UpdateWorkflowDescriptionAsync">@Current.Description</textarea></label>
+                <label class="workflow-enabled"><input type="checkbox" checked="@Current.Enabled" disabled="@IsRunning" @onchange="SetWorkflowEnabledAsync" /><span>Run automatically when its event trigger matches</span></label>
+                <div class="section-label">Test action context</div>
+                <label class="field"><span>Action item used by operations nodes</span>
+                    <select class="nodal-select" @bind="TestActionId">
+                        @foreach (var item in Data.Actions)
+                        {
+                            <option value="@item.Id">@item.Id · @Trim(item.Title, 30)</option>
+                        }
+                    </select>
+                </label>
+                <div class="section-label">Selected component</div>
+                @if (SelectedNode is { } selectedNode)
+                {
+                    var definition = NodeCatalog.Types[selectedNode.Type];
+                    <div class="inspect-card">
+                        <div class="inspect-node-head">
+                            <div class="node-icon" style="--node-color:@definition.Color">@definition.Icon</div>
+                            <div>
+                                <div class="inspect-node-title">@definition.Title</div>
+                                <div class="inspect-node-type">@selectedNode.Id</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="section-label">Configuration</div>
+                    @foreach (var field in definition.Fields)
+                    {
+                        <label class="field" @key="selectedNode.Id + field.Key">
+                            <span>@field.Label</span>
+                            @if (field.Kind == "textarea")
+                            {
+                                <textarea disabled="@IsRunning"
+                                          @onchange="e => UpdateConfigAsync(selectedNode.Id, field.Key, e.Value?.ToString() ?? string.Empty)">@selectedNode.ConfigText(field.Key)</textarea>
+                            }
+                            else if (field.Kind == "workspace" || field.Kind == "workspace-optional")
+                            {
+                                <select class="nodal-select" disabled="@IsRunning" @onchange="e => UpdateConfigAsync(selectedNode.Id, field.Key, e.Value?.ToString() ?? string.Empty)">
+                                    @if (field.Kind == "workspace-optional")
+                                    {
+                                        <option value="" selected="@(string.IsNullOrEmpty(selectedNode.ConfigText(field.Key)))">All workspaces</option>
+                                    }
+                                    @foreach (var workspace in Data.Workspaces)
+                                    {
+                                        <option value="@workspace.Id" selected="@(selectedNode.ConfigText(field.Key) == workspace.Id)">@workspace.Name</option>
+                                    }
+                                </select>
+                            }
+                            else if (field.Kind == "principal")
+                            {
+                                <select class="nodal-select" disabled="@IsRunning" @onchange="e => UpdateConfigAsync(selectedNode.Id, field.Key, e.Value?.ToString() ?? string.Empty)">
+                                    @foreach (var user in Data.Users)
+                                    {
+                                        <option value="@user.Id" selected="@(selectedNode.ConfigText(field.Key) == user.Id)">User · @user.Name</option>
+                                    }
+                                    @foreach (var workspace in Data.Workspaces)
+                                    {
+                                        <option value="@workspace.Id" selected="@(selectedNode.ConfigText(field.Key) == workspace.Id)">Workspace · @workspace.Name</option>
+                                    }
+                                </select>
+                            }
+                            else if (field.Kind == "select")
+                            {
+                                <select class="nodal-select" disabled="@IsRunning"
+                                        @onchange="e => UpdateConfigAsync(selectedNode.Id, field.Key, e.Value?.ToString() ?? string.Empty)">
+                                    @foreach (var option in field.Options ?? [])
+                                    {
+                                        <option value="@option.Value" selected="@(selectedNode.ConfigText(field.Key) == option.Value)">@option.Label</option>
+                                    }
+                                </select>
+                            }
+                            else
+                            {
+                                <input type="@field.Kind" value="@selectedNode.ConfigText(field.Key)" disabled="@IsRunning"
+                                       @onchange="e => UpdateConfigAsync(selectedNode.Id, field.Key, e.Value?.ToString() ?? string.Empty)" />
+                            }
+                        </label>
+                    }
+                    <div class="section-label">Test event payload</div>
+                    <label class="field">
+                        <span>Overrides this node’s input for a test run</span>
+                        <textarea @bind="TestPayload" @bind:event="oninput" rows="3" placeholder="Example: HELLO FROM BLAZOR"></textarea>
+                    </label>
+                    <div class="inspect-actions">
+                        <button class="btn btn-primary" @onclick="() => RunSelectedAsync(selectedNode.Id)" disabled="@IsRunning">▶ Test this node</button>
+                        <button class="btn" @onclick="() => DuplicateNodeAsync(selectedNode.Id)" disabled="@IsRunning">⧉ Duplicate</button>
+                        <button class="btn btn-danger" @onclick="DeleteSelectedAsync" disabled="@IsRunning">⌫ Delete</button>
+                    </div>
+                    <div class="section-label">Last output</div>
+                    <div class="payload-readout">@(LastPayload.TryGetValue(selectedNode.Id, out var last) ? last : "No output yet. Run to inspect.")</div>
+                }
+                else if (SelectedEdge is { } edge)
+                {
+                    <div class="inspect-card">
+                        <div class="section-label" style="margin-top:0">Selected connection</div>
+                        <div class="small">@edge.From <strong style="color:#b8a5ff">[@edge.Out]</strong> → @edge.To <strong>[@edge.In]</strong></div>
+                    </div>
+                    <button class="btn btn-danger" @onclick="DeleteSelectedAsync" disabled="@IsRunning">⌫ Delete connection</button>
+                }
+                else
+                {
+                    <div class="inspector-empty">Select a node or wire to view its properties. You can drag nodes, create connections, and run the sample immediately.</div>
+                }
+                <div class="section-label">External test API</div>
+                <div class="api-box"><code>NodeLab.on('node-complete', callback)</code><br /><code>await NodeLab.run('branch', 'HELLO')</code><br /><code>await NodeLab.getGraph()</code></div>
+            </div>
+            <div class="footer-note">Blazor Interactive Server · Workflow execution in C#.<br />Workflows and sample operations data are persisted server-side in <code>App_Data</code>.</div>
+        </aside>
+    </main>
+
+    <section class="operations-page" style="display:@(View == "operations" ? "grid" : "none")" aria-label="Action item operations">
+        <aside class="operations-nav">
+            <div class="page-side-intro"><div class="eyebrow">Organization</div><h2>Workspaces</h2><p>Choose a functional group to view its own and descendant assignments.</p></div>
+            <div class="tree-list">
+                @foreach (var workspace in OrderedWorkspaces())
+                {
+                    var level = LevelOf(workspace);
+                    <button type="button" class="tree-item @(WorkspaceId == workspace.Id ? "active" : "")" @onclick="() => WorkspaceId = workspace.Id"
+                        style="padding-left:@(14 + level * 13)px">
+                        <span class="tree-chevron">@(Data.Workspaces.Any(w => w.ParentId == workspace.Id) ? "▾" : "·")</span>
+                        <span>@workspace.Name</span>
+                    </button>
+                }
+            </div>
+            <div class="side-create"><div class="eyebrow">Expand organization</div><label class="field"><span>Add child to @WorkspaceName(WorkspaceId)</span>
+                <input type="text" maxlength="80" placeholder="New workspace name" @bind="NewWorkspaceName" /></label>
+                <button class="btn" disabled="@IsRunning" @onclick="CreateWorkspaceAsync">＋ Create child workspace</button>
+            </div>
+        </aside>
+        <div class="operations-content">
+            <div class="operations-workspace-picker">
+                <label class="field"><span>Workspace subtree</span><select class="nodal-select" value="@WorkspaceId" @onchange='e => WorkspaceId = e.Value?.ToString() ?? "cec"' >
+                    @foreach (var workspace in OrderedWorkspaces()) { <option value="@workspace.Id">@workspace.Name</option> }
+                </select></label>
+            </div>
+            <div class="page-head"><div><div class="eyebrow">Action-driven operations</div><h1>@WorkspaceName(WorkspaceId)</h1><p>Items owned by, routed to, or RACI-assigned to this workspace and its descendants.</p></div>
+                @if (CurrentSummary is { } summary)
+                {
+                    <div class="page-stat">@summary.Total <span>total actions</span></div>
+                }
+            </div>
+            @if (CurrentSummary is { } quick)
+            {
+                <div class="metric-strip">
+                    <div class="metric"><span>Open</span><strong>@quick.Open</strong></div>
+                    <div class="metric"><span>In progress</span><strong>@quick.InProgress</strong></div>
+                    <div class="metric danger-metric"><span>Blocked</span><strong>@quick.Blocked</strong></div>
+                    <div class="metric success-metric"><span>Completed</span><strong>@quick.Done</strong></div>
+                </div>
+            }
+            <div class="create-action-panel">
+                <div class="panel-title"><b>＋ New action item</b><span>Creating an item can trigger an enabled workflow.</span></div>
+                <div class="create-form">
+                    <input type="text" placeholder="Describe the next action…" maxlength="180" @bind="NewActionTitle" />
+                    <input type="text" placeholder="Engine / visit reference" maxlength="80" @bind="NewEngineReference" />
+                    <select class="nodal-select" @bind="NewActionPriority">
+                        @foreach (var priority in OperationsStore.Priorities) { <option value="@priority">@priority</option> }
+                    </select>
+                    <button class="btn btn-primary" @onclick="CreateActionAsync" disabled="@IsRunning">Create action</button>
+                </div>
+            </div>
+            <div class="action-list-panel">
+                <div class="panel-title"><b>Action queue</b><span>Changing status dispatches matching enabled workflows.</span></div>
+                <div class="action-table-wrap">
+                    <table class="action-table"><thead><tr><th>Action / engine</th><th>Owner</th><th>Priority</th><th>Status</th><th>Routed to</th></tr></thead>
+                        <tbody>
+                            @foreach (var action in VisibleActions)
+                            {
+                                <tr @key="action.Id" class="@(ActionId == action.Id ? "selected" : "")">
+                                    <td><button class="action-title-button" @onclick="() => ActionId = action.Id"><small>@action.Id · @action.EngineReference</small><b>@action.Title</b></button></td>
+                                    <td>@WorkspaceName(action.OwnerWorkspaceId)</td>
+                                    <td><span class="priority priority-@action.Priority.ToLowerInvariant()">@action.Priority</span></td>
+                                    <td><select class="status-select nodal-select" value="@action.Status" disabled="@IsRunning"
+                                                @onchange="e => ChangeActionStatusAsync(action.Id, e.Value?.ToString() ?? action.Status)">
+                                            @foreach (var status in OperationsStore.Statuses) { <option value="@status">@status</option> }
+                                        </select></td>
+                                    <td>@WorkspaceName(action.AssignedWorkspaceId)</td>
+                                </tr>
+                            }
+                        </tbody></table>
+                </div>
+                @if (VisibleActions.Count == 0) { <p class="empty-label">No actions in this workspace subtree.</p> }
+            </div>
+        </div>
+        <aside class="action-inspector">
+            <div class="page-side-intro"><div class="eyebrow">RACI &amp; routing</div><h2>Action detail</h2><p>Assign a user or a workspace with a RACI role.</p></div>
+            @if (SelectedAction is { } actionDetail)
+            {
+                <div class="action-inspector-body"><span class="ticket">@actionDetail.Id</span><h3>@actionDetail.Title</h3><div class="subtle">@actionDetail.EngineReference</div>
+                    <div class="section-label">Workflow context</div>
+                    <div class="detail-grid"><span>Owner</span><b>@WorkspaceName(actionDetail.OwnerWorkspaceId)</b><span>Status</span><b>@actionDetail.Status</b></div>
+                    <label class="field"><span>Routed workspace</span>
+                        <select class="nodal-select" value="@(actionDetail.AssignedWorkspaceId ?? "")" disabled="@IsRunning"
+                            @onchange="e => RouteActionAsync(actionDetail.Id, e.Value?.ToString() ?? actionDetail.OwnerWorkspaceId)">
+                            @foreach (var workspace in Data.Workspaces) { <option value="@workspace.Id">@workspace.Name</option> }
+                        </select>
+                    </label>
+                    <div class="section-label">RACI assignments</div>
+                    <div class="raci-list">
+                        @foreach (var assigned in actionDetail.Assignments)
+                        {
+                            <div class="raci-entry"><div><b>@assigned.Role</b><span>@PrincipalName(assigned) <small>· @assigned.PrincipalKind</small></span></div>
+                                <button type="button" title="Remove assignment" @onclick="() => RemoveRaciAsync(assigned)" disabled="@IsRunning">×</button></div>
+                        }
+                    </div>
+                    <div class="section-label">Add assignment</div>
+                    <label class="field"><span>Principal type</span><select class="nodal-select" value="@RaciKind" @onchange="ChangeRaciKind"><option value="user">User</option><option value="workspace">Workspace</option></select></label>
+                    <label class="field"><span>Assignee</span>
+                        <select class="nodal-select" @bind="RaciPrincipalId">
+                            @if (RaciKind == "user")
+                            {
+                                @foreach (var user in Data.Users) { <option value="@user.Id">@user.Name</option> }
+                            }
+                            else
+                            {
+                                @foreach (var workspace in Data.Workspaces) { <option value="@workspace.Id">@workspace.Name</option> }
+                            }
+                        </select></label>
+                    <label class="field"><span>Role</span><select class="nodal-select" @bind="RaciRole">
+                        @foreach (var role in OperationsStore.Roles) { <option value="@role">@role</option> }
+                    </select></label>
+                    <button class="btn btn-primary full" disabled="@IsRunning" @onclick="AddRaciAsync">Assign role</button>
+                </div>
+            }
+            else { <div class="subtle" style="padding:20px">Select an action in the queue.</div> }
+        </aside>
+    </section>
+
+    <section class="dashboard-page" style="display:@(View == "dashboards" ? "block" : "none")" aria-label="Workspace dashboard rollups">
+        <div class="dash-inner">
+            <div class="page-head"><div><div class="eyebrow">Automatic organization dashboards</div><h1>Workspace intelligence</h1>
+                <p>Each dashboard is derived from action assignments across its workspace subtree—no separate reporting configuration.</p></div>
+                <label class="dash-selector">View dashboard
+                    <select class="nodal-select" value="@WorkspaceId" @onchange='e => WorkspaceId = e.Value?.ToString() ?? "cec"' >
+                        @foreach (var workspace in OrderedWorkspaces()) { <option value="@workspace.Id">@workspace.Name</option> }
+                    </select>
+                </label>
+            </div>
+            @if (CurrentSummary is { } metric)
+            {
+                <div class="dash-hero"><div><div class="eyebrow">@(SelectedWorkspace?.Code) · Recursive dashboard</div><h2>@metric.WorkspaceName</h2>
+                    <p>Includes @metric.DescendantCount descendant workspace@(metric.DescendantCount == 1 ? "" : "s") and all associated action items, deduplicated within this rollup.</p></div>
+                    <div class="completion-score"><strong>@metric.CompletionPercent%</strong><span>completed</span></div></div>
+                <div class="metric-strip dash-metrics">
+                    <div class="metric"><span>All actions</span><strong>@metric.Total</strong><small>@metric.Direct direct</small></div>
+                    <div class="metric"><span>Open</span><strong>@metric.Open</strong></div>
+                    <div class="metric"><span>In progress</span><strong>@metric.InProgress</strong></div>
+                    <div class="metric danger-metric"><span>Blocked</span><strong>@metric.Blocked</strong></div>
+                    <div class="metric success-metric"><span>Completed</span><strong>@metric.Done</strong></div>
+                </div>
+                <div class="dash-layout"><div class="dash-panel"><div class="panel-title"><b>Disposition overview</b><span>All recursive assignments</span></div>
+                    <div class="segmented-bar">
+                        @if (metric.Total > 0)
+                        {
+                            <span class="bar-open" style="width:@(metric.Open * 100.0 / metric.Total)%"></span>
+                            <span class="bar-progress" style="width:@(metric.InProgress * 100.0 / metric.Total)%"></span>
+                            <span class="bar-blocked" style="width:@(metric.Blocked * 100.0 / metric.Total)%"></span>
+                            <span class="bar-done" style="width:@(metric.Done * 100.0 / metric.Total)%"></span>
+                        }
+                    </div>
+                    <div class="bar-legend"><span>● Open</span><span>● In progress</span><span>● Blocked</span><span>● Done</span></div>
+                    <div class="section-label">Immediate child workspaces</div>
+                    @foreach (var child in Data.Workspaces.Where(w => w.ParentId == WorkspaceId))
+                    {
+                        var childSummary = OperationsRollups.Summarize(Data, child.Id);
+                        <button class="child-workspace-card" @onclick="() => WorkspaceId = child.Id"><div><b>@child.Name</b><small>@childSummary.Total actions · @childSummary.Blocked blocked</small></div>
+                            <strong>@childSummary.CompletionPercent%</strong><span>›</span></button>
+                    }
+                    @if (!Data.Workspaces.Any(w => w.ParentId == WorkspaceId))
+                    { <p class="empty-label">Leaf workspace — no children.</p> }
+                </div>
+                <div class="dash-panel"><div class="panel-title"><b>Attention needed</b><span>Critical or blocked</span></div>
+                    @foreach (var action in VisibleActions.Where(a => a.Status == "Blocked" || a.Priority == "Critical"))
+                    {
+                        <div class="attention-row"><div><b>@action.Title</b><small>@action.Id · @WorkspaceName(action.OwnerWorkspaceId)</small></div>
+                            <span class="priority priority-@action.Priority.ToLowerInvariant()">@action.Status</span></div>
+                    }
+                    @if (!VisibleActions.Any(a => a.Status == "Blocked" || a.Priority == "Critical"))
+                    { <p class="empty-label">No current high-priority exceptions.</p> }
+                    <button class="btn btn-ghost" @onclick='() => ChangeViewAsync("operations")' >Review action queue →</button>
+                </div></div>
+                <div class="demo-reset"><span>Sample-only data store · No live ERP/MRO system is connected.</span>
+                    <button type="button" class="btn btn-ghost" @onclick="ResetDemoDataAsync" disabled="@IsRunning">↺ Reset sample operations data</button></div>
+                <div class="dash-panel org-overview"><div class="panel-title"><b>Organization-wide rollup</b><span>Open a workspace to view its descendants</span></div>
+                    <div class="org-grid">
+                        @foreach (var space in Data.Workspaces)
+                        {
+                            var rollup = OperationsRollups.Summarize(Data, space.Id);
+                            <button class="org-card @(WorkspaceId == space.Id ? "active" : "")" @onclick="() => WorkspaceId = space.Id">
+                                <span>@space.Code</span><b>@space.Name</b><div><strong>@rollup.Total</strong><small>actions</small><em>@rollup.Blocked blocked</em></div>
+                            </button>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    </section>
+
+    <InputFile id="file-input" OnChange="ImportAsync" accept=".json,application/json" style="display:none" />
+</div>

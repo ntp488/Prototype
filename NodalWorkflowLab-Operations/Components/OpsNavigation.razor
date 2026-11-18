@@ -1,0 +1,28 @@
+@if (LinksOnly)
+{
+<nav class="ops-links" aria-label="Global navigation">
+    <a class="@(Active == "work" ? "is-active" : "")" href="/work">My Work</a>
+    <a class="@(Active == "workspaces" ? "is-active" : "")" href="/workspaces">Workspaces</a>
+    <a class="@(Active == "modules" ? "is-active" : "")" href="/modules">Site Modules</a>
+    <a class="@(Active == "atlas" ? "is-active" : "")" href="/processes?mode=fleet">Fleet Atlas</a>
+    <a class="@(Active == "editor" ? "is-active" : "")" href="/">Node Designer</a>
+</nav>
+}
+else
+{
+    <header class="ops-header">
+        <a class="ops-brand" href="/work" aria-label="Nodal operations home"><span class="ops-brand-glyph">N</span><span><b>NODAL</b><small>OPERATIONS INTELLIGENCE</small></span></a>
+<nav class="ops-links" aria-label="Global navigation">
+    <a class="@(Active == "work" ? "is-active" : "")" href="/work">My Work</a>
+    <a class="@(Active == "workspaces" ? "is-active" : "")" href="/workspaces">Workspaces</a>
+    <a class="@(Active == "modules" ? "is-active" : "")" href="/modules">Site Modules</a>
+    <a class="@(Active == "atlas" ? "is-active" : "")" href="/processes?mode=fleet">Fleet Atlas</a>
+    <a class="@(Active == "editor" ? "is-active" : "")" href="/">Node Designer</a>
+</nav>
+        <span class="ops-demo-tag">● DEMO · SYNTHETIC DATA</span>
+    </header>
+}
+@code {
+    [Parameter] public bool LinksOnly { get; set; }
+    [Parameter] public string Active { get; set; } = "";
+}

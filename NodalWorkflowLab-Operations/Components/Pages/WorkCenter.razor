@@ -1,0 +1,98 @@
+@page "/work"
+@inject OperationalCoordinationService Coordination
+@inject NavigationManager Navigation
+@implements IAsyncDisposable
+<PageTitle>My Work · Nodal Operations</PageTitle>
+<div class="ops-app">
+    <OpsNavigation Active="work" />
+    <section class="ops-pagehead">
+        <div><span class="ops-eyebrow">PERSONAL OPERATIONS / DAILY EXECUTION</span><h1>My Work <span class="ops-title-light">/ command center</span></h1>
+            <p>One queue spanning engineering, inspection, materials and repair processes. Open the source module to complete controlled work.</p></div>
+        <div class="ops-head-actions"><label class="ops-select-group"><span>SIMULATED VIEWER</span><select class="nodal-select" @bind="ViewerId"><option value="all">All personnel</option>@foreach (var u in Data.Operations.Users){<option value="@u.Id">@u.Name · @u.Team</option>}</select></label><button class="ops-button ops-button-accent" @onclick="() => ShowCreate = !ShowCreate">＋ New action</button><button class="ops-button" @onclick="ReloadAsync">↻ Refresh</button></div>
+    </section>
+    @if(ShowCreate)
+    {
+        <section class="ops-quick-create"><div><span class="ops-eyebrow">NEW COORDINATION ITEM</span><h2>Create a general action</h2><p>Source-controlled inspections and dispositions must be created in their respective module workbenches.</p></div>
+            <input aria-label="New action title" placeholder="Action title" @bind="DraftTitle" maxlength="180" />
+            <select class="nodal-select" aria-label="Owning workspace" @bind="DraftWorkspaceId">@foreach(var w in Data.Operations.Workspaces){<option value="@w.Id">@w.Name</option>}</select>
+            <input aria-label="Linked engine ID" placeholder="Engine ID (optional)" @bind="DraftEngineId" maxlength="80" />
+            <select class="nodal-select" aria-label="Action priority" @bind="DraftPriority"><option>Low</option><option>Normal</option><option>High</option><option>Critical</option></select>
+            <button class="ops-button ops-button-accent" @onclick="CreateActionAsync">Create action →</button>
+            <button class="ops-button" @onclick="() => ShowCreate = false">Cancel</button>
+            @if(CreationFeedback.Length>0){<span class="ops-create-feedback">@CreationFeedback</span>}
+        </section>
+    }
+    <section class="ops-metric-grid">
+        <div class="ops-metric"><span>YOUR ASSIGNMENTS</span><strong>@AssignedCount</strong><small>Responsible or accountable</small></div>
+        <div class="ops-metric"><span>NEEDS ATTENTION</span><strong>@AttentionCount</strong><small>Blocked or critical</small></div>
+        <div class="ops-metric"><span>WORKSPACE QUEUE</span><strong>@WorkspaceCount</strong><small>Visible cross-functional work</small></div>
+        <div class="ops-metric"><span>OPEN FINDINGS</span><strong>@Data.Processes.Findings.Count(f => f.Status != "Cleared (demo)")</strong><small>Across the demonstration fleet</small></div>
+        <div class="ops-metric"><span>WAITING WORKFLOWS</span><strong>@Data.Processes.Runs.Count(x => x.Status == "Waiting")</strong><small>Persisted in source modules</small></div>
+    </section>
+    <div class="ops-body-grid ops-work-layout">
+        <section class="ops-panel ops-work-main">
+            <div class="ops-panel-head"><div><span class="ops-eyebrow">PRIORITIZED WORK QUEUE</span><h2>@(QueueMode == "mine" ? "Assigned to me" : "Workspace & site work") <span class="ops-muted">· @Filtered.Count</span></h2></div>
+                <div class="ops-segments"><button class="@(QueueMode == "mine" ? "selected" : "")" @onclick='() => QueueMode = "mine"'>My responsibilities</button><button class="@(QueueMode == "workspace" ? "selected" : "")" @onclick='() => QueueMode = "workspace"'>All workspaces</button></div>
+            </div>
+            <div class="ops-filterbar"><input class="ops-search" aria-label="Search work items" placeholder="⌕ Search engine, action, finding or title..." @bind="Search" @bind:event="oninput" />
+                <select class="nodal-select" aria-label="Filter status" @bind="StatusFilter"><option value="">All statuses</option><option>Open</option><option>In Progress</option><option>Blocked</option><option>Done</option></select>
+                <select class="nodal-select" aria-label="Filter module" @bind="ModuleFilter"><option value="">All modules</option><option value="findings">Findings</option><option value="quality">Quality</option><option value="induction">Intake</option><option value="general">General</option></select>
+                <button class="ops-button" @onclick="ClearFilters">Clear</button></div>
+            <div class="ops-queue">
+                @foreach(var action in Filtered.Take(100))
+                {
+                    <div class="ops-work-row @(SelectedActionId == action.Id ? "is-selected" : "")" @key="action.Id">
+                        <button class="ops-work-select" @onclick="() => SelectedActionId = action.Id"><span class="ops-row-top"><b>@action.Id</b><span class="ops-chip @Badge(action.Status)">@action.Status</span><span class="ops-chip @Badge(action.Priority)">@action.Priority</span></span>
+                            <strong>@action.Title</strong><small>@action.EngineReference · @Data.WorkspaceName(action.AssignedWorkspaceId ?? action.OwnerWorkspaceId) · @(string.IsNullOrWhiteSpace(action.ModuleId) ? "General work" : action.ModuleId.ToUpperInvariant())</small>
+                        </button>
+                        <div class="ops-row-actions"><a class="ops-button ops-button-accent" href="@Data.WorkbenchUrl(action)">@(action.RequiresVerifiedCompletion ? "Open module ↗" : "Review ↗")</a><a class="ops-row-chevron" href="@OperationalRouting.Action(action.Id)" title="Open action detail">↗</a></div>
+                    </div>
+                }
+                @if (Filtered.Count==0) { <div class="ops-empty">No matching actions. Try changing the viewer or clearing the filters.</div> }
+            </div>
+            <div class="ops-panel-foot">Showing @Math.Min(Filtered.Count,100) of @Filtered.Count matching work items · Synthetic operations training environment</div>
+        </section>
+        <OperationalContextLens View="Data" EngineId="@SelectedAction?.EngineReference" ActionId="@SelectedAction?.Id" />
+    </div>
+</div>
+@code {
+    private OperationalView Data = new(new(), new(), ProcessMapSnapshot.Seed());
+    private string ViewerId = "u-jordan", QueueMode = "mine", Search = "", StatusFilter = "", ModuleFilter = "", SelectedActionId = "ACT-1002";
+    private bool ShowCreate;
+    private string DraftTitle="",DraftWorkspaceId="engineering",DraftEngineId="",DraftPriority="Normal",CreationFeedback="";
+    private CancellationTokenSource _stop = new();
+    private ActionItem? SelectedAction => Data.Action(SelectedActionId);
+    private List<ActionItem> Owned => Data.Operations.Actions.Where(a => ViewerId == "all" || a.Assignments.Any(r => r.PrincipalKind == "user" && r.PrincipalId == ViewerId && (r.Role == "Responsible" || r.Role == "Accountable"))).ToList();
+    private int AssignedCount => Owned.Count(a => a.Status != "Done");
+    private int WorkspaceCount => Data.Operations.Actions.Count(a => a.Status != "Done");
+    private int AttentionCount => Owned.Count(a => a.Status == "Blocked" || a.Priority == "Critical");
+    private List<ActionItem> Filtered => (QueueMode == "mine" ? Owned : Data.Operations.Actions)
+        .Where(a => (StatusFilter.Length == 0 ? a.Status != "Done" : a.Status == StatusFilter) &&
+            (ModuleFilter.Length == 0 || (ModuleFilter == "general" ? a.ModuleId.Length == 0 : a.ModuleId == ModuleFilter)) &&
+            (Search.Length == 0 || (a.Id + " " + a.Title + " " + a.EngineReference + " " + a.SourceRecordId + " " + a.Detail)
+                .Contains(Search.Trim(), StringComparison.OrdinalIgnoreCase)))
+        .OrderBy(a => a.Status == "Blocked" ? 0 : (a.Priority == "Critical" || a.Priority == "High") ? 1 : 2)
+        .ThenBy(a => a.UpdatedUtc).ToList();
+    private static string Badge(string status) => status.ToLowerInvariant().Replace(' ', '-');
+    protected override async Task OnInitializedAsync() { await ReloadAsync(); _ = PollAsync(_stop.Token); }
+    private async Task ReloadAsync() { Data = await Coordination.ReadAsync(); if (Data.Action(SelectedActionId) is null) SelectedActionId = Filtered.FirstOrDefault()?.Id ?? ""; }
+    private void ClearFilters() { Search=""; StatusFilter=""; ModuleFilter=""; }
+    private async Task CreateActionAsync()
+    {
+        try
+        {
+            var action=await Coordination.CreateGeneralActionAsync(DraftTitle,DraftWorkspaceId,DraftPriority,
+                DraftEngineId,ViewerId=="all"?null:ViewerId);
+            DraftTitle="";DraftEngineId="";CreationFeedback="";ShowCreate=false;
+            SelectedActionId=action.Id;await ReloadAsync();
+        }
+        catch(Exception ex){CreationFeedback=ex.Message;}
+    }
+    private async Task PollAsync(CancellationToken cancel)
+    {
+        try { using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10)); while(await timer.WaitForNextTickAsync(cancel))
+            await InvokeAsync(async () => { await ReloadAsync(); StateHasChanged(); }); }
+        catch (OperationCanceledException) { }
+    }
+    public ValueTask DisposeAsync() { _stop.Cancel(); _stop.Dispose(); return ValueTask.CompletedTask; }
+}
